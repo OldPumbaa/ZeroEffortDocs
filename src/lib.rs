@@ -6,6 +6,8 @@ pub mod extract;
 pub mod files;
 pub mod model;
 pub mod modules;
+pub mod preview;
+pub mod printjob;
 pub mod templates;
 pub mod web;
 

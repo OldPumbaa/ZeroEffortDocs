@@ -47,7 +47,9 @@ pub fn router() -> Router<AppState> {
             .route(
                 "/documents/{id}/source",
                 get(get_source).put(put_source).delete(delete_source),
-            ),
+            )
+            .route("/documents/{id}/preview", get(preview_document))
+            .route("/documents/{id}/print", post(print_document)),
     )
 }
 
@@ -326,6 +328,28 @@ async fn delete_document(
 ) -> Result<StatusCode, AppError> {
     documents::delete(&state.pool, &state.data_dir, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn preview_document(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let html = documents::preview_html(&state.pool, &state.data_dir, &id).await?;
+    Ok((
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        )],
+        html,
+    ))
+}
+
+async fn print_document(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    documents::send_to_printer(&state.pool, &state.data_dir, &id).await?;
+    Ok(Json(json!({ "ok": true, "method": "word" })))
 }
 
 async fn get_source(

@@ -351,6 +351,78 @@ pub async fn source_bytes(
     ))
 }
 
+pub async fn preview_html(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+) -> Result<String, AppError> {
+    let row = sqlx::query("SELECT title, body FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let title: String = sqlx::Row::try_get(&row, "title")?;
+    let body: String = sqlx::Row::try_get(&row, "body")?;
+    let (name, _, bytes) = source_bytes(pool, data_dir, id).await?;
+    let inner = if name.to_ascii_lowercase().ends_with(".docx") || bytes.starts_with(b"PK") {
+        match crate::preview::docx_to_html(&bytes) {
+            Ok(html) if !html.trim().is_empty() => html,
+            _ => html_from_plain(&body),
+        }
+    } else {
+        html_from_plain(&body)
+    };
+    Ok(crate::preview::wrap_preview_page(&title, &inner))
+}
+
+pub async fn send_to_printer(pool: &SqlitePool, data_dir: &Path, id: &str) -> Result<(), AppError> {
+    let path = ensure_docx_on_disk(pool, data_dir, id).await?;
+    crate::printjob::print_docx(&path)
+}
+
+async fn ensure_docx_on_disk(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    let rel: Option<String> = sqlx::query_scalar("SELECT source_path FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+    if let Some(rel) = rel.filter(|s| !s.is_empty()) {
+        if crate::files::safe_rel(&rel) {
+            let path = data_dir.join(&rel);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+    }
+    let (_name, _, bytes) = source_bytes(pool, data_dir, id).await?;
+    let dir = data_dir.join("print");
+    tokio::fs::create_dir_all(&dir).await?;
+    let path = dir.join(format!("{id}.docx"));
+    tokio::fs::write(&path, bytes).await?;
+    Ok(path)
+}
+
+fn html_from_plain(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                "<p>&nbsp;</p>".into()
+            } else {
+                format!(
+                    "<p>{}</p>",
+                    line.replace('&', "&amp;")
+                        .replace('<', "&lt;")
+                        .replace('>', "&gt;")
+                )
+            }
+        })
+        .collect()
+}
+
 pub async fn clear_source(
     pool: &SqlitePool,
     data_dir: &Path,

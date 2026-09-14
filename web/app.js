@@ -693,7 +693,7 @@ async function pageDocumentView(view, id) {
   view.innerHTML = `
     <div class="sheet-grid">
       <div>
-        <div class="paper-wrap" id="paper"></div>
+        <iframe class="preview-frame" id="preview" src="/api/documents/${doc.id}/preview" title="${esc(doc.title)}"></iframe>
       </div>
       <div class="card">
         <p class="muted">Шаблон: <a href="#/templates/${doc.template.id}">${esc(doc.template.name)}</a></p>
@@ -704,15 +704,26 @@ async function pageDocumentView(view, id) {
           <a class="btn" href="/api/documents/${doc.id}/source">Скачать</a>
           <button type="button" class="ghost" id="print-doc-2">Распечатать</button>
         </div>
-        <p class="muted" style="margin-top:10px">Скачать — заполненный Word. Распечатать — этот лист. Дальше снова: форма → выпустить документ.</p>
+        <p class="muted" style="margin-top:10px">Печать идёт в Word, если он установлен — без шапки сайта и адреса. Иначе печатается предпросмотр; в окне печати снимите «Колонтитулы».</p>
         <button type="button" class="danger ghost" id="del-doc" style="margin-top:12px">удалить</button>
       </div>
     </div>`;
-  hydratePaper(document.getElementById("paper"), doc.body, doc.template.fields);
-  document.getElementById("paper").contentEditable = "false";
-  const print = () => window.print();
-  document.getElementById("print-doc")?.addEventListener("click", print);
-  document.getElementById("print-doc-2")?.addEventListener("click", print);
+  const printDoc = async () => {
+    try {
+      await api(`/api/documents/${id}/print`, { method: "POST", body: {} });
+      toast("Отправлено на принтер через Word");
+    } catch {
+      const frame = document.getElementById("preview");
+      if (frame && frame.contentWindow) {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+      } else {
+        window.print();
+      }
+    }
+  };
+  document.getElementById("print-doc")?.addEventListener("click", printDoc);
+  document.getElementById("print-doc-2")?.addEventListener("click", printDoc);
   document.getElementById("del-doc").addEventListener("click", async () => {
     if (!confirm("Удалить документ?")) return;
     try {

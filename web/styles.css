@@ -300,6 +300,14 @@ textarea { min-height: 110px; resize: vertical; }
   line-height: 1.7;
   color: var(--ink);
 }
+.preview-frame {
+  width: 100%;
+  min-height: 780px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  box-shadow: var(--shadow);
+}
 .paper-wrap:focus { outline: 2px solid var(--forest-soft); }
 .chip {
   display: inline-block;
