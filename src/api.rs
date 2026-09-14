@@ -32,6 +32,10 @@ pub fn router() -> Router<AppState> {
                     .put(update_template)
                     .delete(delete_template),
             )
+            .route(
+                "/templates/{id}/source",
+                get(get_template_source).put(put_template_source),
+            )
             .route("/documents", get(list_documents).post(create_document))
             .route("/import", post(import_document))
             .route(
@@ -198,8 +202,75 @@ async fn delete_template(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    templates::delete(&state.pool, &id).await?;
+    templates::delete(&state.pool, &state.data_dir, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_template_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let row =
+        sqlx::query("SELECT source_name, source_mime, source_path FROM templates WHERE id = ?")
+            .bind(&id)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    let name: Option<String> = sqlx::Row::try_get(&row, "source_name")?;
+    let mime: Option<String> = sqlx::Row::try_get(&row, "source_mime")?;
+    let rel: Option<String> = sqlx::Row::try_get(&row, "source_path")?;
+    let (Some(name), Some(rel)) = (name, rel) else {
+        return Err(AppError::NotFound);
+    };
+    if !crate::files::safe_rel(&rel) {
+        return Err(AppError::NotFound);
+    }
+    let bytes = crate::files::read(&state.data_dir, &rel).await?;
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(mime.as_deref().unwrap_or("application/octet-stream"))
+                    .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+            ),
+            (header::CONTENT_DISPOSITION, content_disposition(&name)),
+        ],
+        Body::from(bytes),
+    ))
+}
+
+async fn put_template_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, AppError> {
+    let mut found = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad(e.to_string()))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = field.file_name().unwrap_or("file").to_string();
+        let mime = field
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::bad(e.to_string()))?;
+        found = Some((filename, mime, bytes));
+    }
+    let Some((filename, mime, bytes)) = found else {
+        return Err(AppError::bad("приложите файл"));
+    };
+    let saved =
+        templates::attach_source(&state.pool, &state.data_dir, &id, &filename, &mime, &bytes)
+            .await?;
+    Ok(Json(json!(saved)))
 }
 
 #[derive(Deserialize)]

@@ -114,6 +114,7 @@ pub struct TemplateDetail {
     pub name: String,
     pub description: String,
     pub body: String,
+    pub source: Option<SourceInfo>,
     pub fields: Vec<Field>,
     pub document_count: i64,
     pub created_at: String,

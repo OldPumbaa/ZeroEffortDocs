@@ -391,7 +391,10 @@ fn validate_value(field: &Field, value: Value) -> Result<Value, AppError> {
             let s = s.trim();
             if s.is_empty() {
                 if field.required {
-                    return Err(AppError::bad(format!("поле «{}» обязательно", field.label)));
+                    return Err(AppError::bad(format!(
+                        "нужно заполнить поле: {label}",
+                        label = field.label
+                    )));
                 }
                 return Ok(Value::Null);
             }
@@ -431,7 +434,10 @@ fn validate_value(field: &Field, value: Value) -> Result<Value, AppError> {
                 Value::Number(num) => num.as_f64(),
                 Value::String(s) if s.trim().is_empty() => {
                     if field.required {
-                        return Err(AppError::bad(format!("поле «{}» обязательно", field.label)));
+                        return Err(AppError::bad(format!(
+                            "нужно заполнить поле: {label}",
+                            label = field.label
+                        )));
                     }
                     return Ok(Value::Null);
                 }
@@ -592,7 +598,9 @@ mod tests {
         let listed = list(&state.pool, None).await.unwrap();
         assert_eq!(listed.len(), 1);
 
-        let del = templates::delete(&state.pool, &tmpl.id).await.unwrap_err();
+        let del = templates::delete(&state.pool, &state.data_dir, &tmpl.id)
+            .await
+            .unwrap_err();
         assert!(matches!(del, AppError::Conflict(_)));
         assert_eq!(doc.body, "черновик приказа");
     }

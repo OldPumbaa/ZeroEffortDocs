@@ -1,10 +1,13 @@
+use std::path::Path;
+
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::files;
 use crate::model::{
-    is_valid_key, now, require_name, Field, FieldInput, FieldType, FillMode, TemplateDetail,
-    TemplateSummary, UpsertTemplate,
+    is_valid_key, now, require_name, Field, FieldInput, FieldType, FillMode, SourceInfo,
+    TemplateDetail, TemplateSummary, UpsertTemplate,
 };
 
 #[derive(sqlx::FromRow)]
@@ -13,6 +16,8 @@ struct TemplateRow {
     name: String,
     description: String,
     body: String,
+    source_name: Option<String>,
+    source_mime: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -47,7 +52,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<TemplateSummary>, AppError> {
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<TemplateDetail, AppError> {
     let row = sqlx::query_as::<_, TemplateRow>(
-        "SELECT id, name, description, body, created_at, updated_at FROM templates WHERE id = ?",
+        "SELECT id, name, description, body, source_name, source_mime, created_at, updated_at FROM templates WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -59,11 +64,19 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<TemplateDetail, AppError
             .bind(id)
             .fetch_one(pool)
             .await?;
+    let source = match (row.source_name, row.source_mime) {
+        (Some(name), mime) if !name.is_empty() => Some(SourceInfo {
+            name,
+            mime: mime.unwrap_or_else(|| "application/octet-stream".into()),
+        }),
+        _ => None,
+    };
     Ok(TemplateDetail {
         id: row.id,
         name: row.name,
         description: row.description,
         body: row.body,
+        source,
         fields,
         document_count,
         created_at: row.created_at,
@@ -165,7 +178,7 @@ pub async fn update(
     get(pool, id).await
 }
 
-pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
+pub async fn delete(pool: &SqlitePool, data_dir: &Path, id: &str) -> Result<(), AppError> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE template_id = ?")
         .bind(id)
         .fetch_one(pool)
@@ -175,6 +188,12 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
             "нельзя удалить шаблон: по нему уже есть документы ({count})"
         )));
     }
+    let source_path: Option<String> =
+        sqlx::query_scalar("SELECT source_path FROM templates WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
     let res = sqlx::query("DELETE FROM templates WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -182,7 +201,47 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    if let Some(rel) = source_path {
+        files::remove(data_dir, &rel);
+    }
     Ok(())
+}
+
+pub async fn attach_source(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+    filename: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> Result<TemplateDetail, AppError> {
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM templates WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    if exists == 0 {
+        return Err(AppError::NotFound);
+    }
+    let old: Option<String> = sqlx::query_scalar("SELECT source_path FROM templates WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    if let Some(rel) = old.as_deref().filter(|p| !p.is_empty()) {
+        files::remove(data_dir, rel);
+    }
+    let (display, mime, rel) =
+        files::save(data_dir, "templates", id, filename, mime, bytes).await?;
+    sqlx::query(
+        "UPDATE templates SET source_name = ?, source_mime = ?, source_path = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&display)
+    .bind(&mime)
+    .bind(&rel)
+    .bind(now())
+    .bind(id)
+    .execute(pool)
+    .await?;
+    get(pool, id).await
 }
 
 struct PreparedField {

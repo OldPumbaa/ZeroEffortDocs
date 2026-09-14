@@ -46,6 +46,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
             body TEXT NOT NULL DEFAULT '',
+            source_name TEXT,
+            source_mime TEXT,
+            source_path TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -151,6 +154,21 @@ async fn ensure_extra_columns(pool: &SqlitePool) -> Result<(), AppError> {
     let tmpl = table_columns(pool, "templates").await?;
     if !tmpl.contains("body") {
         sqlx::query("ALTER TABLE templates ADD COLUMN body TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+    if !tmpl.contains("source_name") {
+        sqlx::query("ALTER TABLE templates ADD COLUMN source_name TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !tmpl.contains("source_mime") {
+        sqlx::query("ALTER TABLE templates ADD COLUMN source_mime TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !tmpl.contains("source_path") {
+        sqlx::query("ALTER TABLE templates ADD COLUMN source_path TEXT")
             .execute(pool)
             .await?;
     }

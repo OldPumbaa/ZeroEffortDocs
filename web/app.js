@@ -392,8 +392,9 @@ async function pageTemplateEditor(view, id, query) {
           <label class="drop" id="drop">
             <input type="file" id="file" accept=".docx,.txt,.md">
             <strong>Файл Word или текст</strong>
-            <p class="muted" id="file-label">${st.file ? esc(st.file.name) : "Перетащите .docx. В Word заранее можно написать {{fio}}, {{date}}, {{num}} — поля подхватятся сами."}</p>
+            <p class="muted" id="file-label">${st.file ? esc(st.file.name) : data.source ? esc(data.source.name) : "Перетащите .docx. В Word заранее можно написать {{fio}}, {{date}}, {{num}} — поля подхватятся сами."}</p>
           </label>
+          ${data.source ? `<p class="muted"><a href="/api/templates/${esc(data.id)}/source">скачать исходный файл</a></p>` : ""}
           <div>
             <div class="spread" style="margin-bottom:8px">
               <span class="muted">Лист. Выделите фрагмент и нажмите «Поле», либо импортируйте .docx с {{переменными}}.</span>
@@ -522,14 +523,16 @@ async function pageTemplateEditor(view, id, query) {
           ? await api("/api/templates", { method: "POST", body: payload })
           : await api(`/api/templates/${id}`, { method: "PUT", body: payload });
         if (st.file) {
-          const first = await api("/api/documents", {
-            method: "POST",
-            body: { template_id: saved.id, title: `${saved.name} — оригинал`, body: saved.body, values: {} },
-          });
           try {
-            await uploadSource(first.id, st.file);
+            const fd = new FormData();
+            fd.append("file", st.file);
+            const res = await fetch(`/api/templates/${saved.id}/source`, { method: "PUT", body: fd });
+            const extra = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(extra.error || res.statusText);
           } catch (e) {
-            toast(`Шаблон есть, файл нет: ${e.message}`, true);
+            toast(`Шаблон сохранён, исходный файл нет: ${e.message}`, true);
+            location.hash = `#/templates/${saved.id}`;
+            return;
           }
         }
         toast("Шаблон сохранён");
