@@ -17,6 +17,8 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    #[error("не удалось прочитать файл: {0}")]
+    Zip(#[from] zip::result::ZipError),
 }
 
 impl AppError {

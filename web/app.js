@@ -389,15 +389,14 @@ async function pageTemplateEditor(view, id, query) {
           <label><span>Название шаблона</span>
             <input id="tmpl-name" type="text" required value="${esc(st.name)}" placeholder="Приём на работу">
           </label>
-          ${isNew && query.import ? `
-            <label class="drop" id="drop">
-              <input type="file" id="file">
-              <strong>Исходный документ</strong>
-              <p class="muted" id="file-label">${st.file ? esc(st.file.name) : "Перетащите файл или нажмите. Текст из .txt попадёт на лист."}</p>
-            </label>` : ""}
+          <label class="drop" id="drop">
+            <input type="file" id="file" accept=".docx,.txt,.md">
+            <strong>Файл Word или текст</strong>
+            <p class="muted" id="file-label">${st.file ? esc(st.file.name) : "Перетащите .docx. В Word заранее можно написать {{fio}}, {{date}}, {{num}} — поля подхватятся сами."}</p>
+          </label>
           <div>
             <div class="spread" style="margin-bottom:8px">
-              <span class="muted">Лист — как в Word. Выделите ФИО, дату или номер и нажмите «Поле».</span>
+              <span class="muted">Лист. Выделите фрагмент и нажмите «Поле», либо импортируйте .docx с {{переменными}}.</span>
               <button type="button" class="ghost compact" id="mark-field">Поле</button>
             </div>
             <div class="paper-wrap" id="paper" contenteditable="true"></div>
@@ -559,13 +558,37 @@ async function pageTemplateEditor(view, id, query) {
       const onFile = async (file) => {
         st.file = file;
         document.getElementById("file-label").textContent = file.name;
-        if (/\.txt$/i.test(file.name) || file.type.startsWith("text/")) {
-          const text = await file.text();
-          data.body = text;
-          hydratePaper(document.getElementById("paper"), text, st.fields);
-        }
         if (!document.getElementById("tmpl-name").value) {
           document.getElementById("tmpl-name").value = file.name.replace(/\.[^.]+$/, "");
+        }
+        try {
+          const fd = new FormData();
+          fd.append("file", file);
+          const res = await fetch("/api/extract", { method: "POST", body: fd });
+          const preview = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(preview.error || res.statusText);
+          data.body = preview.text || "";
+          for (const f of preview.fields || []) {
+            if (st.fields.some((x) => x.key === f.key)) continue;
+            st.fields.push({
+              id: null,
+              key: f.key,
+              label: f.label,
+              type: f.type,
+              required: !!f.required,
+              fill_mode: f.fill_mode || "manual",
+              options: [],
+            });
+          }
+          hydratePaper(document.getElementById("paper"), data.body, st.fields);
+          paintFields();
+          if ((preview.fields || []).length) {
+            toast(`Текст из файла, полей: ${preview.fields.length}`);
+          } else {
+            toast("Текст на листе. Выделите места и нажмите «Поле»");
+          }
+        } catch (e) {
+          toast(e.message, true);
         }
       };
       fileInput.addEventListener("change", () => { if (fileInput.files[0]) onFile(fileInput.files[0]); });

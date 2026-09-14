@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::model::{
     ImportDocument, PatchDocument, PatchInstance, SetupInput, Stats, UpsertDocument, UpsertTemplate,
 };
-use crate::{documents, modules, templates, AppError, AppState};
+use crate::{documents, extract, modules, templates, AppError, AppState};
 
 pub fn router() -> Router<AppState> {
     Router::new().nest(
@@ -21,6 +21,7 @@ pub fn router() -> Router<AppState> {
             .route("/stats", get(stats))
             .route("/instance", get(get_instance).patch(patch_instance))
             .route("/setup", post(setup_instance))
+            .route("/extract", post(extract_file))
             .route("/modules", get(list_modules))
             .route("/modules/{id}/enable", post(enable_module))
             .route("/modules/{id}/disable", post(disable_module))
@@ -116,6 +117,30 @@ async fn patch_instance(
         modules::set_enabled_set(&state.pool, &ids).await?;
     }
     instance_json(&state.pool).await
+}
+
+async fn extract_file(mut multipart: Multipart) -> Result<Json<Value>, AppError> {
+    let mut found = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad(e.to_string()))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = field.file_name().unwrap_or("file").to_string();
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::bad(e.to_string()))?;
+        found = Some((filename, bytes));
+    }
+    let Some((filename, bytes)) = found else {
+        return Err(AppError::bad("приложите файл"));
+    };
+    let extracted = extract::from_bytes(&filename, &bytes)?;
+    Ok(Json(json!(extracted)))
 }
 
 async fn list_modules(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
