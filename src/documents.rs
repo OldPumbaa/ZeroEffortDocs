@@ -1,20 +1,16 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Map, Value};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::files;
 use crate::model::{
-    now, require_name, DocumentDetail, DocumentSummary, Field, FieldType, ImportDocument,
+    now, require_name, DocumentDetail, DocumentSummary, Field, FieldType, FillMode, ImportDocument,
     PatchDocument, SourceInfo, UpsertDocument, UpsertTemplate,
 };
 use crate::templates;
-
-pub const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
-const BLOCKED_EXT: &[&str] = &[
-    "exe", "bat", "cmd", "com", "dll", "msi", "scr", "ps1", "vbs",
-];
 
 pub async fn list(
     pool: &SqlitePool,
@@ -114,11 +110,18 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<DocumentDetail, AppError
 pub async fn create(pool: &SqlitePool, input: UpsertDocument) -> Result<DocumentDetail, AppError> {
     let template = templates::get(pool, &input.template_id).await?;
     let title = require_name(&input.title, "название документа")?;
-    let body = clamp_body(&input.body)?;
-    let normalized = normalize_values(&template.fields, &input.values)?;
+    let mut values = input.values.clone();
     let id = Uuid::new_v4().to_string();
     let ts = now();
     let mut tx = pool.begin().await?;
+    apply_autos(&mut tx, &template.id, &template.fields, &mut values).await?;
+    let normalized = normalize_values(&template.fields, &values)?;
+    let render_map = values_by_key(&template.fields, &normalized);
+    let body = if input.body.trim().is_empty() {
+        templates::render_body(&template.body, &template.fields, &render_map)
+    } else {
+        clamp_body(&input.body)?
+    };
     sqlx::query(
         "INSERT INTO documents (id, template_id, title, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     )
@@ -177,7 +180,7 @@ pub async fn delete(pool: &SqlitePool, data_dir: &Path, id: &str) -> Result<(), 
         return Err(AppError::NotFound);
     }
     if let Some(rel) = source_path {
-        remove_stored(data_dir, &rel);
+        files::remove(data_dir, &rel);
     }
     Ok(())
 }
@@ -192,6 +195,7 @@ pub async fn import(pool: &SqlitePool, input: ImportDocument) -> Result<Document
             UpsertTemplate {
                 name,
                 description: String::new(),
+                body: input.body.clone(),
                 fields: input.fields,
             },
         )
@@ -217,13 +221,6 @@ pub async fn attach_source(
     mime: &str,
     bytes: &[u8],
 ) -> Result<DocumentDetail, AppError> {
-    if bytes.len() > MAX_SOURCE_BYTES {
-        return Err(AppError::bad("файл больше 20 МБ"));
-    }
-    let ext = extension_of(filename);
-    if BLOCKED_EXT.contains(&ext.as_str()) {
-        return Err(AppError::bad("этот тип файла нельзя импортировать"));
-    }
     let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE id = ?")
         .bind(id)
         .fetch_one(pool)
@@ -236,30 +233,9 @@ pub async fn attach_source(
         .fetch_one(pool)
         .await?;
     if let Some(rel) = old.as_deref().filter(|p| !p.is_empty()) {
-        remove_stored(data_dir, rel);
+        files::remove(data_dir, rel);
     }
-
-    let disk_name = format!(
-        "original{}",
-        if ext.is_empty() {
-            String::new()
-        } else {
-            format!(".{ext}")
-        }
-    );
-    let rel = format!("files/{id}/{disk_name}");
-    let abs = data_dir.join(&rel);
-    if let Some(parent) = abs.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    tokio::fs::write(&abs, bytes).await?;
-
-    let display = display_name(filename);
-    let mime = if mime.trim().is_empty() {
-        "application/octet-stream".to_string()
-    } else {
-        mime.trim().to_string()
-    };
+    let (display, mime, rel) = files::save(data_dir, "files", id, filename, mime, bytes).await?;
     sqlx::query(
         "UPDATE documents SET source_name = ?, source_mime = ?, source_path = ?, updated_at = ? WHERE id = ?",
     )
@@ -290,10 +266,10 @@ pub async fn source_bytes(
     let (Some(name), Some(rel)) = (name, rel) else {
         return Err(AppError::NotFound);
     };
-    if rel.is_empty() || Path::new(&rel).is_absolute() || rel.contains("..") {
+    if !files::safe_rel(&rel) {
         return Err(AppError::NotFound);
     }
-    let bytes = tokio::fs::read(data_dir.join(&rel)).await?;
+    let bytes = files::read(data_dir, &rel).await?;
     Ok((
         name,
         mime.unwrap_or_else(|| "application/octet-stream".into()),
@@ -322,7 +298,7 @@ pub async fn clear_source(
         return Err(AppError::NotFound);
     }
     if let Some(rel) = old.as_deref().filter(|p| !p.is_empty()) {
-        remove_stored(data_dir, rel);
+        files::remove(data_dir, rel);
     }
     get(pool, id).await
 }
@@ -334,33 +310,55 @@ fn clamp_body(body: &str) -> Result<String, AppError> {
     Ok(body.to_string())
 }
 
-fn extension_of(filename: &str) -> String {
-    Path::new(filename)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
+async fn apply_autos(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    template_id: &str,
+    fields: &[Field],
+    values: &mut Map<String, Value>,
+) -> Result<(), AppError> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    for field in fields {
+        match field.fill_mode {
+            FillMode::CreatedAt => {
+                values.insert(field.key.clone(), Value::String(today.clone()));
+            }
+            FillMode::Sequence => {
+                let n = next_seq(tx, template_id, &field.key).await?;
+                values.insert(field.key.clone(), serde_json::json!(n));
+            }
+            FillMode::Manual => {}
+        }
+    }
+    Ok(())
 }
 
-fn display_name(filename: &str) -> String {
-    Path::new(filename)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("file")
-        .chars()
-        .take(180)
-        .collect()
+async fn next_seq(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    template_id: &str,
+    key: &str,
+) -> Result<i64, AppError> {
+    let n: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO sequences (template_id, field_key, next_value) VALUES (?, ?, 1)
+        ON CONFLICT(template_id, field_key) DO UPDATE SET next_value = next_value + 1
+        RETURNING next_value
+        "#,
+    )
+    .bind(template_id)
+    .bind(key)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(n)
 }
 
-fn remove_stored(data_dir: &Path, rel: &str) {
-    if rel.is_empty() || Path::new(rel).is_absolute() || rel.contains("..") {
-        return;
+fn values_by_key(fields: &[Field], normalized: &[(String, Value)]) -> Map<String, Value> {
+    let mut map = Map::new();
+    for field in fields {
+        if let Some((_, v)) = normalized.iter().find(|(id, _)| id == &field.id) {
+            map.insert(field.key.clone(), v.clone());
+        }
     }
-    let abs: PathBuf = data_dir.join(rel);
-    let _ = std::fs::remove_file(&abs);
-    if let Some(parent) = abs.parent() {
-        let _ = std::fs::remove_dir(parent);
-    }
+    map
 }
 
 fn normalize_values(
@@ -424,6 +422,11 @@ fn validate_value(field: &Field, value: Value) -> Result<Value, AppError> {
             Ok(Value::String(s.to_string()))
         }
         FieldType::Number => {
+            if let Value::Number(num) = &value {
+                if let Some(i) = num.as_i64() {
+                    return Ok(serde_json::json!(i));
+                }
+            }
             let n = match &value {
                 Value::Number(num) => num.as_f64(),
                 Value::String(s) if s.trim().is_empty() => {
@@ -496,7 +499,7 @@ async fn write_values(
 mod tests {
     use super::*;
     use crate::db;
-    use crate::model::{FieldInput, FieldType, ImportDocument, UpsertTemplate};
+    use crate::model::{FieldInput, FieldType, FillMode, ImportDocument, UpsertTemplate};
     use crate::AppState;
 
     async fn state() -> (AppState, tempfile::TempDir) {
@@ -515,6 +518,7 @@ mod tests {
         UpsertTemplate {
             name: "Приём на работу".into(),
             description: "демо".into(),
+            body: "Приказ: {{full_name}}, дата {{start_date}}, {{kind}}.".into(),
             fields: vec![
                 FieldInput {
                     id: None,
@@ -522,6 +526,7 @@ mod tests {
                     label: "ФИО".into(),
                     field_type: FieldType::Text,
                     required: true,
+                    fill_mode: FillMode::Manual,
                     options: vec![],
                 },
                 FieldInput {
@@ -530,6 +535,7 @@ mod tests {
                     label: "Дата".into(),
                     field_type: FieldType::Date,
                     required: true,
+                    fill_mode: FillMode::Manual,
                     options: vec![],
                 },
                 FieldInput {
@@ -538,6 +544,7 @@ mod tests {
                     label: "Тип".into(),
                     field_type: FieldType::Select,
                     required: false,
+                    fill_mode: FillMode::Manual,
                     options: vec!["Трудовой".into(), "ГПХ".into()],
                 },
             ],
@@ -660,6 +667,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn autos_date_and_number() {
+        let (state, _dir) = state().await;
+        let tmpl = templates::create(
+            &state.pool,
+            UpsertTemplate {
+                name: "Приказ".into(),
+                description: String::new(),
+                body: "№ {{num}} от {{when}} — {{who}}".into(),
+                fields: vec![
+                    FieldInput {
+                        id: None,
+                        key: "who".into(),
+                        label: "ФИО".into(),
+                        field_type: FieldType::Text,
+                        required: true,
+                        fill_mode: FillMode::Manual,
+                        options: vec![],
+                    },
+                    FieldInput {
+                        id: None,
+                        key: "when".into(),
+                        label: "Дата".into(),
+                        field_type: FieldType::Date,
+                        required: false,
+                        fill_mode: FillMode::CreatedAt,
+                        options: vec![],
+                    },
+                    FieldInput {
+                        id: None,
+                        key: "num".into(),
+                        label: "Номер".into(),
+                        field_type: FieldType::Number,
+                        required: false,
+                        fill_mode: FillMode::Sequence,
+                        options: vec![],
+                    },
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        let mut values = Map::new();
+        values.insert("who".into(), Value::String("Иванов".into()));
+        let a = create(
+            &state.pool,
+            UpsertDocument {
+                template_id: tmpl.id.clone(),
+                title: "один".into(),
+                body: String::new(),
+                values: values.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let b = create(
+            &state.pool,
+            UpsertDocument {
+                template_id: tmpl.id.clone(),
+                title: "два".into(),
+                body: String::new(),
+                values,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(a.values["num"].as_i64(), Some(1));
+        assert_eq!(b.values["num"].as_i64(), Some(2));
+        assert!(a.body.contains("№ 1"));
+        assert!(b.body.contains("№ 2"));
+        assert!(a.values["when"].as_str().unwrap().len() == 10);
+    }
+
+    #[tokio::test]
     async fn reject_bad_select() {
         let (state, _dir) = state().await;
         let err = templates::create(
@@ -667,12 +747,14 @@ mod tests {
             UpsertTemplate {
                 name: "X".into(),
                 description: String::new(),
+                body: String::new(),
                 fields: vec![FieldInput {
                     id: None,
                     key: "kind".into(),
                     label: "Тип".into(),
                     field_type: FieldType::Select,
                     required: false,
+                    fill_mode: FillMode::Manual,
                     options: vec!["один".into()],
                 }],
             },

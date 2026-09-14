@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::model::{
-    ImportDocument, PatchDocument, PatchInstance, Stats, UpsertDocument, UpsertTemplate,
+    ImportDocument, PatchDocument, PatchInstance, SetupInput, Stats, UpsertDocument, UpsertTemplate,
 };
 use crate::{documents, modules, templates, AppError, AppState};
 
@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
             .route("/health", get(health))
             .route("/stats", get(stats))
             .route("/instance", get(get_instance).patch(patch_instance))
+            .route("/setup", post(setup_instance))
             .route("/modules", get(list_modules))
             .route("/modules/{id}/enable", post(enable_module))
             .route("/modules/{id}/disable", post(disable_module))
@@ -70,16 +71,36 @@ async fn stats(State(state): State<AppState>) -> Result<Json<Stats>, AppError> {
     }))
 }
 
-async fn get_instance(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let row: (String, String, String) =
-        sqlx::query_as("SELECT id, name, created_at FROM instance LIMIT 1")
-            .fetch_one(&state.pool)
+async fn instance_json(pool: &sqlx::SqlitePool) -> Result<Json<Value>, AppError> {
+    let row: (String, String, i64, String) =
+        sqlx::query_as("SELECT id, name, setup_done, created_at FROM instance LIMIT 1")
+            .fetch_one(pool)
             .await?;
+    let modules = modules::list(pool).await?;
     Ok(Json(json!({
         "id": row.0,
         "name": row.1,
-        "created_at": row.2,
+        "setup_done": row.2 != 0,
+        "created_at": row.3,
+        "modules": modules,
     })))
+}
+
+async fn get_instance(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
+    instance_json(&state.pool).await
+}
+
+async fn setup_instance(
+    State(state): State<AppState>,
+    Json(body): Json<SetupInput>,
+) -> Result<Json<Value>, AppError> {
+    let name = crate::model::require_name(&body.name, "название компании")?;
+    modules::set_enabled_set(&state.pool, &body.enabled_modules).await?;
+    sqlx::query("UPDATE instance SET name = ?, setup_done = 1")
+        .bind(&name)
+        .execute(&state.pool)
+        .await?;
+    instance_json(&state.pool).await
 }
 
 async fn patch_instance(
@@ -91,7 +112,10 @@ async fn patch_instance(
         .bind(&name)
         .execute(&state.pool)
         .await?;
-    get_instance(State(state)).await
+    if let Some(ids) = body.enabled_modules {
+        modules::set_enabled_set(&state.pool, &ids).await?;
+    }
+    instance_json(&state.pool).await
 }
 
 async fn list_modules(State(state): State<AppState>) -> Result<Json<Value>, AppError> {

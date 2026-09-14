@@ -24,10 +24,11 @@ UI в `web/` отдаётся из бинарника (`rust-embed`). В debug-�
 
 ## Данные
 
-- `instance` — название компании на этом узле
-- `modules` — включён/выключен (`employees`, `archive`)
-- `templates` + `template_fields` — форма (схема), обычно появляется из импорта
-- `documents` + `document_values` — запись: текст, значения полей, исходный файл
+- `instance` — компания, `setup_done` после мастера
+- `modules` — включён/выключен (`employees`, `archive`), задаётся в мастере и настройках
+- `templates` + `template_fields` — лист (`body` с `{{key}}`) и поля (`fill_mode`: manual / created_at / sequence)
+- `sequences` — счётчик номера на поле шаблона
+- `documents` + `document_values` — заполненный экземпляр
 
 Ключ поля: `^[a-z][a-z0-9_]{0,63}$`. В UI русский заголовок транслитерируется в ключ.
 

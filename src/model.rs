@@ -14,6 +14,36 @@ pub enum FieldType {
     Select,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FillMode {
+    #[default]
+    Manual,
+    CreatedAt,
+    Sequence,
+}
+
+impl FillMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::CreatedAt => "created_at",
+            Self::Sequence => "sequence",
+        }
+    }
+
+    pub fn parse(s: &str) -> Result<Self, AppError> {
+        match s {
+            "manual" | "" => Ok(Self::Manual),
+            "created_at" => Ok(Self::CreatedAt),
+            "sequence" => Ok(Self::Sequence),
+            other => Err(AppError::bad(format!(
+                "неизвестный способ заполнения: {other}"
+            ))),
+        }
+    }
+}
+
 impl FieldType {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -47,6 +77,7 @@ pub struct Field {
     #[serde(rename = "type")]
     pub field_type: FieldType,
     pub required: bool,
+    pub fill_mode: FillMode,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
 }
@@ -60,6 +91,8 @@ pub struct FieldInput {
     pub field_type: FieldType,
     #[serde(default)]
     pub required: bool,
+    #[serde(default)]
+    pub fill_mode: FillMode,
     #[serde(default)]
     pub options: Vec<String>,
 }
@@ -80,6 +113,7 @@ pub struct TemplateDetail {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub body: String,
     pub fields: Vec<Field>,
     pub document_count: i64,
     pub created_at: String,
@@ -91,6 +125,8 @@ pub struct UpsertTemplate {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub body: String,
     pub fields: Vec<FieldInput>,
 }
 
@@ -165,6 +201,14 @@ pub struct Instance {
 #[derive(Debug, Clone, Deserialize)]
 pub struct PatchInstance {
     pub name: String,
+    pub enabled_modules: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SetupInput {
+    pub name: String,
+    #[serde(default)]
+    pub enabled_modules: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

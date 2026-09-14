@@ -75,3 +75,17 @@ pub async fn set_enabled(
         enabled_at: ts,
     })
 }
+
+pub async fn set_enabled_set(
+    pool: &SqlitePool,
+    enabled_ids: &[String],
+) -> Result<Vec<ModuleStatus>, AppError> {
+    for id in enabled_ids {
+        info(id)?;
+    }
+    for spec in CATALOG {
+        let on = enabled_ids.iter().any(|id| id == spec.id);
+        set_enabled(pool, spec.id, on).await?;
+    }
+    list(pool).await
+}

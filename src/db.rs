@@ -29,6 +29,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
         CREATE TABLE IF NOT EXISTS instance (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
+            setup_done INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         )
         "#,
@@ -44,6 +45,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -56,6 +58,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             label TEXT NOT NULL,
             field_type TEXT NOT NULL,
             required INTEGER NOT NULL DEFAULT 0,
+            fill_mode TEXT NOT NULL DEFAULT 'manual',
             options_json TEXT,
             sort_order INTEGER NOT NULL,
             FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE,
@@ -77,6 +80,14 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
         )
         "#,
         r#"
+        CREATE TABLE IF NOT EXISTS sequences (
+            template_id TEXT NOT NULL,
+            field_key TEXT NOT NULL,
+            next_value INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (template_id, field_key)
+        )
+        "#,
+        r#"
         CREATE TABLE IF NOT EXISTS document_values (
             document_id TEXT NOT NULL,
             field_id TEXT NOT NULL,
@@ -95,9 +106,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
         .fetch_one(pool)
         .await?;
     if instance_count == 0 {
-        sqlx::query("INSERT INTO instance (id, name, created_at) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO instance (id, name, setup_done, created_at) VALUES (?, ?, 0, ?)")
             .bind(uuid::Uuid::new_v4().to_string())
-            .bind("Моя компания")
+            .bind("")
             .bind(now())
             .execute(pool)
             .await?;
@@ -110,12 +121,15 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             .await?;
     }
 
-    ensure_document_columns(pool).await?;
+    ensure_extra_columns(pool).await?;
     Ok(())
 }
 
-async fn ensure_document_columns(pool: &SqlitePool) -> Result<(), AppError> {
-    let rows = sqlx::query("PRAGMA table_info(documents)")
+async fn table_columns(
+    pool: &SqlitePool,
+    table: &str,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
         .fetch_all(pool)
         .await?;
     let mut names = std::collections::HashSet::new();
@@ -123,22 +137,50 @@ async fn ensure_document_columns(pool: &SqlitePool) -> Result<(), AppError> {
         let name: String = sqlx::Row::try_get(&row, "name")?;
         names.insert(name);
     }
-    if !names.contains("body") {
+    Ok(names)
+}
+
+async fn ensure_extra_columns(pool: &SqlitePool) -> Result<(), AppError> {
+    let inst = table_columns(pool, "instance").await?;
+    if !inst.contains("setup_done") {
+        sqlx::query("ALTER TABLE instance ADD COLUMN setup_done INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await?;
+    }
+
+    let tmpl = table_columns(pool, "templates").await?;
+    if !tmpl.contains("body") {
+        sqlx::query("ALTER TABLE templates ADD COLUMN body TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+
+    let fields = table_columns(pool, "template_fields").await?;
+    if !fields.contains("fill_mode") {
+        sqlx::query(
+            "ALTER TABLE template_fields ADD COLUMN fill_mode TEXT NOT NULL DEFAULT 'manual'",
+        )
+        .execute(pool)
+        .await?;
+    }
+
+    let docs = table_columns(pool, "documents").await?;
+    if !docs.contains("body") {
         sqlx::query("ALTER TABLE documents ADD COLUMN body TEXT NOT NULL DEFAULT ''")
             .execute(pool)
             .await?;
     }
-    if !names.contains("source_name") {
+    if !docs.contains("source_name") {
         sqlx::query("ALTER TABLE documents ADD COLUMN source_name TEXT")
             .execute(pool)
             .await?;
     }
-    if !names.contains("source_mime") {
+    if !docs.contains("source_mime") {
         sqlx::query("ALTER TABLE documents ADD COLUMN source_mime TEXT")
             .execute(pool)
             .await?;
     }
-    if !names.contains("source_path") {
+    if !docs.contains("source_path") {
         sqlx::query("ALTER TABLE documents ADD COLUMN source_path TEXT")
             .execute(pool)
             .await?;

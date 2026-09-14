@@ -3,8 +3,8 @@ use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::model::{
-    is_valid_key, now, require_name, Field, FieldInput, FieldType, TemplateDetail, TemplateSummary,
-    UpsertTemplate,
+    is_valid_key, now, require_name, Field, FieldInput, FieldType, FillMode, TemplateDetail,
+    TemplateSummary, UpsertTemplate,
 };
 
 #[derive(sqlx::FromRow)]
@@ -12,6 +12,7 @@ struct TemplateRow {
     id: String,
     name: String,
     description: String,
+    body: String,
     created_at: String,
     updated_at: String,
 }
@@ -46,7 +47,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<TemplateSummary>, AppError> {
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<TemplateDetail, AppError> {
     let row = sqlx::query_as::<_, TemplateRow>(
-        "SELECT id, name, description, created_at, updated_at FROM templates WHERE id = ?",
+        "SELECT id, name, description, body, created_at, updated_at FROM templates WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -62,6 +63,7 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<TemplateDetail, AppError
         id: row.id,
         name: row.name,
         description: row.description,
+        body: row.body,
         fields,
         document_count,
         created_at: row.created_at,
@@ -71,7 +73,7 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<TemplateDetail, AppError
 
 pub async fn fields_of(pool: &SqlitePool, template_id: &str) -> Result<Vec<Field>, AppError> {
     let rows = sqlx::query(
-        "SELECT id, key, label, field_type, required, options_json, sort_order FROM template_fields WHERE template_id = ? ORDER BY sort_order, key",
+        "SELECT id, key, label, field_type, required, fill_mode, options_json, sort_order FROM template_fields WHERE template_id = ? ORDER BY sort_order, key",
     )
     .bind(template_id)
     .fetch_all(pool)
@@ -91,6 +93,7 @@ pub async fn fields_of(pool: &SqlitePool, template_id: &str) -> Result<Vec<Field
             label: row.try_get("label")?,
             field_type: FieldType::parse(&type_raw)?,
             required: required != 0,
+            fill_mode: FillMode::parse(&row.try_get::<String, _>("fill_mode")?)?,
             options,
         });
     }
@@ -103,16 +106,18 @@ pub async fn create(pool: &SqlitePool, input: UpsertTemplate) -> Result<Template
     if description.len() > 2000 {
         return Err(AppError::bad("описание слишком длинное"));
     }
+    let body = clamp_body(&input.body)?;
     let prepared = prepare_fields(&input.fields, None)?;
     let id = Uuid::new_v4().to_string();
     let ts = now();
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO templates (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO templates (id, name, description, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&name)
     .bind(&description)
+    .bind(&body)
     .bind(&ts)
     .bind(&ts)
     .execute(&mut *tx)
@@ -133,18 +138,21 @@ pub async fn update(
     if description.len() > 2000 {
         return Err(AppError::bad("описание слишком длинное"));
     }
+    let body = clamp_body(&input.body)?;
     let keep_ids: Vec<String> = existing.fields.iter().map(|f| f.id.clone()).collect();
     let prepared = prepare_fields(&input.fields, Some(&keep_ids))?;
     let ts = now();
     let mut tx = pool.begin().await?;
-    let res =
-        sqlx::query("UPDATE templates SET name = ?, description = ?, updated_at = ? WHERE id = ?")
-            .bind(&name)
-            .bind(&description)
-            .bind(&ts)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
+    let res = sqlx::query(
+        "UPDATE templates SET name = ?, description = ?, body = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&name)
+    .bind(&description)
+    .bind(&body)
+    .bind(&ts)
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
@@ -183,6 +191,7 @@ struct PreparedField {
     label: String,
     field_type: FieldType,
     required: bool,
+    fill_mode: FillMode,
     options_json: Option<String>,
 }
 
@@ -190,9 +199,6 @@ fn prepare_fields(
     inputs: &[FieldInput],
     existing_ids: Option<&[String]>,
 ) -> Result<Vec<PreparedField>, AppError> {
-    if inputs.is_empty() {
-        return Err(AppError::bad("добавьте хотя бы одно поле"));
-    }
     if inputs.len() > 80 {
         return Err(AppError::bad("слишком много полей"));
     }
@@ -209,7 +215,15 @@ fn prepare_fields(
             return Err(AppError::bad(format!("ключ «{key}» повторяется")));
         }
         let label = require_name(&input.label, "подпись поля")?;
-        if input.field_type == FieldType::Select {
+        let fill_mode = input.fill_mode;
+        let field_type = match fill_mode {
+            FillMode::CreatedAt => FieldType::Date,
+            FillMode::Sequence => FieldType::Number,
+            FillMode::Manual => input.field_type,
+        };
+        let required =
+            fill_mode == FillMode::Manual && input.required && field_type != FieldType::Checkbox;
+        if field_type == FieldType::Select {
             let options: Vec<String> = input
                 .options
                 .iter()
@@ -226,8 +240,9 @@ fn prepare_fields(
                 id: field_id(input, existing_ids),
                 key,
                 label,
-                field_type: input.field_type,
-                required: input.required,
+                field_type,
+                required,
+                fill_mode,
                 options_json: Some(options_json),
             });
         } else {
@@ -235,8 +250,9 @@ fn prepare_fields(
                 id: field_id(input, existing_ids),
                 key,
                 label,
-                field_type: input.field_type,
-                required: input.required && input.field_type != FieldType::Checkbox,
+                field_type,
+                required,
+                fill_mode,
                 options_json: None,
             });
         }
@@ -260,7 +276,7 @@ async fn insert_fields(
 ) -> Result<(), AppError> {
     for (i, field) in fields.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO template_fields (id, template_id, key, label, field_type, required, options_json, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO template_fields (id, template_id, key, label, field_type, required, fill_mode, options_json, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&field.id)
         .bind(template_id)
@@ -268,10 +284,44 @@ async fn insert_fields(
         .bind(&field.label)
         .bind(field.field_type.as_str())
         .bind(field.required as i64)
+        .bind(field.fill_mode.as_str())
         .bind(&field.options_json)
         .bind(i as i64)
         .execute(&mut **tx)
         .await?;
     }
     Ok(())
+}
+
+fn clamp_body(body: &str) -> Result<String, AppError> {
+    if body.len() > 200_000 {
+        return Err(AppError::bad("текст шаблона слишком длинный"));
+    }
+    Ok(body.to_string())
+}
+
+pub fn render_body(
+    layout: &str,
+    fields: &[Field],
+    values: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    let mut out = layout.to_string();
+    for field in fields {
+        let needle = format!("{{{{{}}}}}", field.key);
+        let replacement = match values.get(&field.key) {
+            None | Some(serde_json::Value::Null) => String::new(),
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            Some(serde_json::Value::Bool(b)) => {
+                if *b {
+                    "да".into()
+                } else {
+                    "нет".into()
+                }
+            }
+            Some(other) => other.to_string(),
+        };
+        out = out.replace(&needle, &replacement);
+    }
+    out
 }
