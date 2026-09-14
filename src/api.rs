@@ -1,11 +1,16 @@
-use axum::extract::{Path, Query, State};
+use axum::body::Body;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::header::{self, HeaderValue};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::model::{PatchDocument, PatchInstance, Stats, UpsertDocument, UpsertTemplate};
+use crate::model::{
+    ImportDocument, PatchDocument, PatchInstance, Stats, UpsertDocument, UpsertTemplate,
+};
 use crate::{documents, modules, templates, AppError, AppState};
 
 pub fn router() -> Router<AppState> {
@@ -26,11 +31,16 @@ pub fn router() -> Router<AppState> {
                     .delete(delete_template),
             )
             .route("/documents", get(list_documents).post(create_document))
+            .route("/import", post(import_document))
             .route(
                 "/documents/{id}",
                 get(get_document)
                     .put(update_document)
                     .delete(delete_document),
+            )
+            .route(
+                "/documents/{id}/source",
+                get(get_source).put(put_source).delete(delete_source),
             ),
     )
 }
@@ -165,6 +175,14 @@ async fn create_document(
     Ok((StatusCode::CREATED, Json(json!(created))))
 }
 
+async fn import_document(
+    State(state): State<AppState>,
+    Json(body): Json<ImportDocument>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let created = documents::import(&state.pool, body).await?;
+    Ok((StatusCode::CREATED, Json(json!(created))))
+}
+
 async fn get_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -186,6 +204,97 @@ async fn delete_document(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    documents::delete(&state.pool, &id).await?;
+    documents::delete(&state.pool, &state.data_dir, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let (name, mime, bytes) = documents::source_bytes(&state.pool, &state.data_dir, &id).await?;
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(&mime)
+                    .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+            ),
+            (header::CONTENT_DISPOSITION, content_disposition(&name)),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            ),
+        ],
+        Body::from(bytes),
+    ))
+}
+
+async fn put_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    mut multipart: Multipart,
+) -> Result<Json<Value>, AppError> {
+    let mut found = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::bad(e.to_string()))?
+    {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let filename = field.file_name().unwrap_or("file").to_string();
+        let mime = field
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::bad(e.to_string()))?;
+        found = Some((filename, mime, bytes));
+    }
+    let Some((filename, mime, bytes)) = found else {
+        return Err(AppError::bad("приложите файл"));
+    };
+    let doc = documents::attach_source(&state.pool, &state.data_dir, &id, &filename, &mime, &bytes)
+        .await?;
+    Ok(Json(json!(doc)))
+}
+
+async fn delete_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    Ok(Json(json!(
+        documents::clear_source(&state.pool, &state.data_dir, &id).await?
+    )))
+}
+
+fn content_disposition(name: &str) -> HeaderValue {
+    let ascii: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded: String = name
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_') {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    HeaderValue::from_str(&format!(
+        "attachment; filename=\"{ascii}\"; filename*=UTF-8''{encoded}"
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
 }

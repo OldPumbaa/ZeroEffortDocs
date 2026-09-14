@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.8", features = ["json", "macros"] }
+axum = { version = "0.8", features = ["json", "macros", "multipart"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 mime_guess = "2"

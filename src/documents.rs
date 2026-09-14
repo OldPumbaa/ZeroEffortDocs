@@ -1,13 +1,20 @@
+use std::path::{Path, PathBuf};
+
 use serde_json::{Map, Value};
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::model::{
-    now, require_name, DocumentDetail, DocumentSummary, Field, FieldType, PatchDocument,
-    UpsertDocument,
+    now, require_name, DocumentDetail, DocumentSummary, Field, FieldType, ImportDocument,
+    PatchDocument, SourceInfo, UpsertDocument, UpsertTemplate,
 };
 use crate::templates;
+
+pub const MAX_SOURCE_BYTES: usize = 20 * 1024 * 1024;
+const BLOCKED_EXT: &[&str] = &[
+    "exe", "bat", "cmd", "com", "dll", "msi", "scr", "ps1", "vbs",
+];
 
 pub async fn list(
     pool: &SqlitePool,
@@ -16,7 +23,8 @@ pub async fn list(
     let rows = if let Some(tid) = template_id {
         sqlx::query(
             r#"
-            SELECT d.id, d.template_id, t.name AS template_name, d.title, d.created_at, d.updated_at
+            SELECT d.id, d.template_id, t.name AS template_name, d.title, d.created_at, d.updated_at,
+                   d.source_path
             FROM documents d
             JOIN templates t ON t.id = d.template_id
             WHERE d.template_id = ?
@@ -29,7 +37,8 @@ pub async fn list(
     } else {
         sqlx::query(
             r#"
-            SELECT d.id, d.template_id, t.name AS template_name, d.title, d.created_at, d.updated_at
+            SELECT d.id, d.template_id, t.name AS template_name, d.title, d.created_at, d.updated_at,
+                   d.source_path
             FROM documents d
             JOIN templates t ON t.id = d.template_id
             ORDER BY d.updated_at DESC
@@ -40,11 +49,13 @@ pub async fn list(
     };
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
+        let source_path: Option<String> = row.try_get("source_path")?;
         out.push(DocumentSummary {
             id: row.try_get("id")?,
             template_id: row.try_get("template_id")?,
             template_name: row.try_get("template_name")?,
             title: row.try_get("title")?,
+            has_source: source_path.as_deref().is_some_and(|p| !p.is_empty()),
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         });
@@ -54,7 +65,7 @@ pub async fn list(
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<DocumentDetail, AppError> {
     let row = sqlx::query(
-        "SELECT id, template_id, title, created_at, updated_at FROM documents WHERE id = ?",
+        "SELECT id, template_id, title, body, source_name, source_mime, created_at, updated_at FROM documents WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -62,6 +73,15 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<DocumentDetail, AppError
     .ok_or(AppError::NotFound)?;
     let template_id: String = row.try_get("template_id")?;
     let template = templates::get(pool, &template_id).await?;
+    let source_name: Option<String> = row.try_get("source_name")?;
+    let source_mime: Option<String> = row.try_get("source_mime")?;
+    let source = match (source_name, source_mime) {
+        (Some(name), mime) if !name.is_empty() => Some(SourceInfo {
+            name,
+            mime: mime.unwrap_or_else(|| "application/octet-stream".into()),
+        }),
+        _ => None,
+    };
     let value_rows = sqlx::query(
         r#"
         SELECT f.key, v.value_json
@@ -82,6 +102,8 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<DocumentDetail, AppError
     Ok(DocumentDetail {
         id: row.try_get("id")?,
         title: row.try_get("title")?,
+        body: row.try_get("body")?,
+        source,
         template,
         values,
         created_at: row.try_get("created_at")?,
@@ -92,16 +114,18 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<DocumentDetail, AppError
 pub async fn create(pool: &SqlitePool, input: UpsertDocument) -> Result<DocumentDetail, AppError> {
     let template = templates::get(pool, &input.template_id).await?;
     let title = require_name(&input.title, "название документа")?;
+    let body = clamp_body(&input.body)?;
     let normalized = normalize_values(&template.fields, &input.values)?;
     let id = Uuid::new_v4().to_string();
     let ts = now();
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "INSERT INTO documents (id, template_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO documents (id, template_id, title, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&template.id)
     .bind(&title)
+    .bind(&body)
     .bind(&ts)
     .bind(&ts)
     .execute(&mut *tx)
@@ -118,11 +142,13 @@ pub async fn update(
 ) -> Result<DocumentDetail, AppError> {
     let existing = get(pool, id).await?;
     let title = require_name(&input.title, "название документа")?;
+    let body = clamp_body(&input.body)?;
     let normalized = normalize_values(&existing.template.fields, &input.values)?;
     let ts = now();
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE documents SET title = ?, updated_at = ? WHERE id = ?")
+    sqlx::query("UPDATE documents SET title = ?, body = ?, updated_at = ? WHERE id = ?")
         .bind(&title)
+        .bind(&body)
         .bind(&ts)
         .bind(id)
         .execute(&mut *tx)
@@ -136,7 +162,13 @@ pub async fn update(
     get(pool, id).await
 }
 
-pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
+pub async fn delete(pool: &SqlitePool, data_dir: &Path, id: &str) -> Result<(), AppError> {
+    let source_path: Option<String> =
+        sqlx::query_scalar("SELECT source_path FROM documents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
     let res = sqlx::query("DELETE FROM documents WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -144,7 +176,191 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> Result<(), AppError> {
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    if let Some(rel) = source_path {
+        remove_stored(data_dir, &rel);
+    }
     Ok(())
+}
+
+pub async fn import(pool: &SqlitePool, input: ImportDocument) -> Result<DocumentDetail, AppError> {
+    let template = if let Some(form_id) = input.form_id.as_deref().filter(|s| !s.is_empty()) {
+        templates::get(pool, form_id).await?
+    } else {
+        let name = require_name(input.form_name.as_deref().unwrap_or(""), "название формы")?;
+        templates::create(
+            pool,
+            UpsertTemplate {
+                name,
+                description: String::new(),
+                fields: input.fields,
+            },
+        )
+        .await?
+    };
+    create(
+        pool,
+        UpsertDocument {
+            template_id: template.id,
+            title: input.title,
+            body: input.body,
+            values: input.values,
+        },
+    )
+    .await
+}
+
+pub async fn attach_source(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+    filename: &str,
+    mime: &str,
+    bytes: &[u8],
+) -> Result<DocumentDetail, AppError> {
+    if bytes.len() > MAX_SOURCE_BYTES {
+        return Err(AppError::bad("файл больше 20 МБ"));
+    }
+    let ext = extension_of(filename);
+    if BLOCKED_EXT.contains(&ext.as_str()) {
+        return Err(AppError::bad("этот тип файла нельзя импортировать"));
+    }
+    let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    if exists == 0 {
+        return Err(AppError::NotFound);
+    }
+    let old: Option<String> = sqlx::query_scalar("SELECT source_path FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    if let Some(rel) = old.as_deref().filter(|p| !p.is_empty()) {
+        remove_stored(data_dir, rel);
+    }
+
+    let disk_name = format!(
+        "original{}",
+        if ext.is_empty() {
+            String::new()
+        } else {
+            format!(".{ext}")
+        }
+    );
+    let rel = format!("files/{id}/{disk_name}");
+    let abs = data_dir.join(&rel);
+    if let Some(parent) = abs.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&abs, bytes).await?;
+
+    let display = display_name(filename);
+    let mime = if mime.trim().is_empty() {
+        "application/octet-stream".to_string()
+    } else {
+        mime.trim().to_string()
+    };
+    sqlx::query(
+        "UPDATE documents SET source_name = ?, source_mime = ?, source_path = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(&display)
+    .bind(&mime)
+    .bind(&rel)
+    .bind(now())
+    .bind(id)
+    .execute(pool)
+    .await?;
+    get(pool, id).await
+}
+
+pub async fn source_bytes(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+) -> Result<(String, String, Vec<u8>), AppError> {
+    let row =
+        sqlx::query("SELECT source_name, source_mime, source_path FROM documents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    let name: Option<String> = row.try_get("source_name")?;
+    let mime: Option<String> = row.try_get("source_mime")?;
+    let rel: Option<String> = row.try_get("source_path")?;
+    let (Some(name), Some(rel)) = (name, rel) else {
+        return Err(AppError::NotFound);
+    };
+    if rel.is_empty() || Path::new(&rel).is_absolute() || rel.contains("..") {
+        return Err(AppError::NotFound);
+    }
+    let bytes = tokio::fs::read(data_dir.join(&rel)).await?;
+    Ok((
+        name,
+        mime.unwrap_or_else(|| "application/octet-stream".into()),
+        bytes,
+    ))
+}
+
+pub async fn clear_source(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+) -> Result<DocumentDetail, AppError> {
+    let old: Option<String> = sqlx::query_scalar("SELECT source_path FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+    let res = sqlx::query(
+        "UPDATE documents SET source_name = NULL, source_mime = NULL, source_path = NULL, updated_at = ? WHERE id = ?",
+    )
+    .bind(now())
+    .bind(id)
+    .execute(pool)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    if let Some(rel) = old.as_deref().filter(|p| !p.is_empty()) {
+        remove_stored(data_dir, rel);
+    }
+    get(pool, id).await
+}
+
+fn clamp_body(body: &str) -> Result<String, AppError> {
+    if body.len() > 200_000 {
+        return Err(AppError::bad("текст документа слишком длинный"));
+    }
+    Ok(body.to_string())
+}
+
+fn extension_of(filename: &str) -> String {
+    Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+fn display_name(filename: &str) -> String {
+    Path::new(filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .chars()
+        .take(180)
+        .collect()
+}
+
+fn remove_stored(data_dir: &Path, rel: &str) {
+    if rel.is_empty() || Path::new(rel).is_absolute() || rel.contains("..") {
+        return;
+    }
+    let abs: PathBuf = data_dir.join(rel);
+    let _ = std::fs::remove_file(&abs);
+    if let Some(parent) = abs.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
 }
 
 fn normalize_values(
@@ -280,13 +496,19 @@ async fn write_values(
 mod tests {
     use super::*;
     use crate::db;
-    use crate::model::{FieldInput, UpsertTemplate};
+    use crate::model::{FieldInput, FieldType, ImportDocument, UpsertTemplate};
     use crate::AppState;
 
     async fn state() -> (AppState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let pool = db::init(&dir.path().join("t.sqlite")).await.unwrap();
-        (AppState { pool }, dir)
+        (
+            AppState {
+                pool,
+                data_dir: dir.path().to_path_buf(),
+            },
+            dir,
+        )
     }
 
     fn hire_template() -> UpsertTemplate {
@@ -335,6 +557,7 @@ mod tests {
             UpsertDocument {
                 template_id: tmpl.id.clone(),
                 title: "Иванов".into(),
+                body: String::new(),
                 values: Map::new(),
             },
         )
@@ -351,6 +574,7 @@ mod tests {
             UpsertDocument {
                 template_id: tmpl.id.clone(),
                 title: "Иванов И.И.".into(),
+                body: "черновик приказа".into(),
                 values,
             },
         )
@@ -363,6 +587,76 @@ mod tests {
 
         let del = templates::delete(&state.pool, &tmpl.id).await.unwrap_err();
         assert!(matches!(del, AppError::Conflict(_)));
+        assert_eq!(doc.body, "черновик приказа");
+    }
+
+    #[tokio::test]
+    async fn import_builds_form() {
+        let (state, _dir) = state().await;
+        let mut values = Map::new();
+        values.insert("full_name".into(), Value::String("Петров".into()));
+        values.insert("start_date".into(), Value::String("2026-01-10".into()));
+        let doc = import(
+            &state.pool,
+            ImportDocument {
+                title: "Петров П.П.".into(),
+                body: "текст".into(),
+                form_id: None,
+                form_name: Some("Приём на работу".into()),
+                fields: hire_template().fields,
+                values,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(doc.template.name, "Приём на работу");
+        assert_eq!(doc.template.fields.len(), 3);
+        assert_eq!(doc.body, "текст");
+
+        let again = import(
+            &state.pool,
+            ImportDocument {
+                title: "Сидоров".into(),
+                body: String::new(),
+                form_id: Some(doc.template.id.clone()),
+                form_name: None,
+                fields: vec![],
+                values: {
+                    let mut v = Map::new();
+                    v.insert("full_name".into(), Value::String("Сидоров".into()));
+                    v.insert("start_date".into(), Value::String("2026-02-01".into()));
+                    v
+                },
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.template.id, doc.template.id);
+        assert_eq!(templates::list(&state.pool).await.unwrap().len(), 1);
+
+        let attached = attach_source(
+            &state.pool,
+            &state.data_dir,
+            &doc.id,
+            "scan.pdf",
+            "application/pdf",
+            b"%PDF-1.4 demo",
+        )
+        .await
+        .unwrap();
+        assert_eq!(attached.source.as_ref().unwrap().name, "scan.pdf");
+
+        let exe = attach_source(
+            &state.pool,
+            &state.data_dir,
+            &doc.id,
+            "virus.exe",
+            "application/octet-stream",
+            b"MZ",
+        )
+        .await
+        .unwrap_err();
+        assert!(exe.to_string().contains("нельзя"));
     }
 
     #[tokio::test]

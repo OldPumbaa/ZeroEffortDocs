@@ -1,8 +1,11 @@
 {
+  // F5 / Run and Debug — штатный запуск (сборка + сервер + отладчик).
+  // Ctrl+F5 — то же без брейкпоинтов.
+  // Ctrl+Shift+B только компилирует, сервер не поднимает.
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "ZED: запуск",
+      "name": "ZED",
       "type": "cppvsdbg",
       "request": "launch",
       "program": "${workspaceFolder}/target/debug/zed.exe",
@@ -16,7 +19,7 @@
       "preLaunchTask": "cargo: build"
     },
     {
-      "name": "ZED: запуск и открыть браузер",
+      "name": "ZED + браузер",
       "type": "cppvsdbg",
       "request": "launch",
       "program": "${workspaceFolder}/target/debug/zed.exe",

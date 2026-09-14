@@ -132,6 +132,28 @@ input[type="text"], input[type="number"], input[type="date"], select, textarea {
 textarea { min-height: 110px; resize: vertical; }
 .form { display: grid; gap: 16px; max-width: 760px; }
 .form-wide { max-width: 920px; }
+.editor-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 20px;
+  align-items: start;
+  max-width: 1200px;
+}
+.editor-body {
+  min-height: 280px;
+  font-family: Georgia, "Palatino Linotype", serif;
+  line-height: 1.65;
+}
+.drop {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  padding: 22px 16px;
+  text-align: center;
+  background: #fff;
+  cursor: pointer;
+}
+.drop.drag { border-color: var(--forest); background: var(--forest-soft); }
+.drop input { display: none; }
 .check { display: flex; align-items: center; gap: 8px; }
 .check input { width: auto; }
 
@@ -218,5 +240,5 @@ textarea { min-height: 110px; resize: vertical; }
   .sidebar nav { display: flex; flex: 1; }
   .sidebar-foot { display: none; }
   main { padding: 20px; }
-  .stats, .field-grid { grid-template-columns: 1fr; }
+  .stats, .field-grid, .editor-grid { grid-template-columns: 1fr; }
 }

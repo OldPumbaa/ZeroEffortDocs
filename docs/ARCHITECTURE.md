@@ -17,6 +17,7 @@
 ```
 zed.exe  →  Axum  :4748  →  браузер
                 ↘ SQLite  ./data/zed.sqlite
+                ↘ файлы   ./data/files/<id>/original.ext
 ```
 
 UI в `web/` отдаётся из бинарника (`rust-embed`). В debug-сборке файлы читаются с диска, можно править HTML/CSS/JS без перекомпиляции.
@@ -25,8 +26,8 @@ UI в `web/` отдаётся из бинарника (`rust-embed`). В debug-�
 
 - `instance` — название компании на этом узле
 - `modules` — включён/выключен (`employees`, `archive`)
-- `templates` + `template_fields` — схема документа
-- `documents` + `document_values` — экземпляр и значения полей (JSON)
+- `templates` + `template_fields` — форма (схема), обычно появляется из импорта
+- `documents` + `document_values` — запись: текст, значения полей, исходный файл
 
 Ключ поля: `^[a-z][a-z0-9_]{0,63}$`. В UI русский заголовок транслитерируется в ключ.
 
@@ -44,7 +45,7 @@ Toolchain `x86_64-pc-windows-msvc` пишет PDB. LLDB (CodeLLDB, lldb-dap) э�
 
 - `rust-toolchain.toml` тянет `rust-src` и `rust-analyzer` — пропадают «can't find std» и «unlinked file»
 - `rust-analyzer.debug.engine` = `ms-vscode.cpptools`
-- launch.json: тип `cppvsdbg`, F5 собирает `zed.exe` и стартует с брейкпоинтами
+- launch.json: тип `cppvsdbg`. **F5 = Run and Debug** (сборка + сервер). Build task только компилирует.
 
 Расширение C/C++ рекомендуется в `.vscode/extensions.json`. CodeLLDB наоборот listed as unwanted.
 

@@ -100,14 +100,23 @@ pub struct DocumentSummary {
     pub template_id: String,
     pub template_name: String,
     pub title: String,
+    pub has_source: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceInfo {
+    pub name: String,
+    pub mime: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentDetail {
     pub id: String,
     pub title: String,
+    pub body: String,
+    pub source: Option<SourceInfo>,
     pub template: TemplateDetail,
     pub values: serde_json::Map<String, Value>,
     pub created_at: String,
@@ -119,12 +128,29 @@ pub struct UpsertDocument {
     pub template_id: String,
     pub title: String,
     #[serde(default)]
+    pub body: String,
+    #[serde(default)]
     pub values: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PatchDocument {
     pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub values: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportDocument {
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    pub form_id: Option<String>,
+    pub form_name: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<FieldInput>,
     #[serde(default)]
     pub values: serde_json::Map<String, Value>,
 }

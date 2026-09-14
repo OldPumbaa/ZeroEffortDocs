@@ -67,6 +67,10 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             id TEXT PRIMARY KEY,
             template_id TEXT NOT NULL,
             title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            source_name TEXT,
+            source_mime TEXT,
+            source_path TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (template_id) REFERENCES templates(id)
@@ -102,6 +106,40 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
     for id in ["employees", "archive"] {
         sqlx::query("INSERT OR IGNORE INTO modules (id, enabled) VALUES (?, 0)")
             .bind(id)
+            .execute(pool)
+            .await?;
+    }
+
+    ensure_document_columns(pool).await?;
+    Ok(())
+}
+
+async fn ensure_document_columns(pool: &SqlitePool) -> Result<(), AppError> {
+    let rows = sqlx::query("PRAGMA table_info(documents)")
+        .fetch_all(pool)
+        .await?;
+    let mut names = std::collections::HashSet::new();
+    for row in rows {
+        let name: String = sqlx::Row::try_get(&row, "name")?;
+        names.insert(name);
+    }
+    if !names.contains("body") {
+        sqlx::query("ALTER TABLE documents ADD COLUMN body TEXT NOT NULL DEFAULT ''")
+            .execute(pool)
+            .await?;
+    }
+    if !names.contains("source_name") {
+        sqlx::query("ALTER TABLE documents ADD COLUMN source_name TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !names.contains("source_mime") {
+        sqlx::query("ALTER TABLE documents ADD COLUMN source_mime TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !names.contains("source_path") {
+        sqlx::query("ALTER TABLE documents ADD COLUMN source_path TEXT")
             .execute(pool)
             .await?;
     }

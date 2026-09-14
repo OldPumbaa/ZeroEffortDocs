@@ -3,6 +3,7 @@
   "tasks": [
     {
       "label": "cargo: build",
+      "detail": "Только компиляция zed.exe. Чтобы запустить сервер — F5 (Run and Debug).",
       "type": "process",
       "command": "cargo",
       "args": ["build", "--bin", "zed"],

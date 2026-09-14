@@ -110,7 +110,8 @@ async function render() {
     await loadCompany();
     const { parts, query } = parseHash();
     const a = parts[0] || "home";
-    if (a === "templates" && parts[1] === "new") await pageTemplateEditor(view, null);
+    if (a === "import") await pageImport(view, query);
+    else if (a === "templates" && parts[1] === "new") await pageTemplateEditor(view, null);
     else if (a === "templates" && parts[1]) await pageTemplateEditor(view, parts[1]);
     else if (a === "templates") await pageTemplates(view);
     else if (a === "documents" && parts[1] === "new") await pageDocumentEditor(view, null, query.template);
@@ -125,26 +126,24 @@ async function render() {
 }
 
 async function pageHome(view) {
-  setNav("home", "Обзор", `<a class="btn" href="#/templates/new">Новый шаблон</a>`);
-  const [stats, docs, templates] = await Promise.all([
+  setNav("home", "Обзор", `<a class="btn" href="#/import">Импорт</a>`);
+  const [stats, docs] = await Promise.all([
     api("/api/stats"),
     api("/api/documents"),
-    api("/api/templates"),
   ]);
   const recent = docs.slice(0, 6);
   view.innerHTML = `
     <div class="stats">
-      <div class="card"><div class="kicker">Шаблоны</div><div class="stat-num">${stats.templates}</div></div>
+      <div class="card"><div class="kicker">Формы</div><div class="stat-num">${stats.templates}</div></div>
       <div class="card"><div class="kicker">Документы</div><div class="stat-num">${stats.documents}</div></div>
       <div class="card"><div class="kicker">Модули</div><div class="stat-num">${stats.modules_enabled}</div><p class="muted">включено заранее</p></div>
     </div>
     <div class="grid" style="margin-top:20px">
       <div class="card">
         <h2>С чего начать</h2>
-        <p class="muted">Соберите шаблон — набор полей. Дальше каждый новый документ этого вида заполняется простой формой, без копирования прошлого файла.</p>
+        <p class="muted">Добавьте документ: простой редактор, свои поля — из них соберётся форма. Следующий такой же уже заполняется по форме, без копирования прошлого файла.</p>
         <p style="margin-top:12px" class="row">
-          <a class="btn" href="#/templates/new">Собрать шаблон</a>
-          ${templates.length === 0 ? `<button type="button" class="ghost" id="seed-hire">пример: приём на работу</button>` : `<a class="btn ghost" href="#/documents/new">Зарегистрировать документ</a>`}
+          <a class="btn" href="#/import">Импортировать документ</a>
         </p>
       </div>
       <div class="card">
@@ -157,13 +156,12 @@ async function pageHome(view) {
           </table>`}
       </div>
     </div>`;
-  document.getElementById("seed-hire")?.addEventListener("click", seedHire);
 }
 
 async function seedHire() {
   try {
     const t = await api("/api/templates", { method: "POST", body: SAMPLE_HIRE });
-    toast("Шаблон «Приём на работу» создан");
+    toast("Форма «Приём на работу» создана");
     location.hash = `#/templates/${t.id}`;
   } catch (e) {
     toast(e.message, true);
@@ -173,12 +171,12 @@ async function seedHire() {
 async function pageTemplates(view) {
   setNav(
     "templates",
-    "Шаблоны",
-    `<button type="button" class="ghost" id="seed-hire">пример</button><a class="btn" href="#/templates/new">Новый шаблон</a>`,
+    "Формы",
+    `<button type="button" class="ghost" id="seed-hire">пример</button><a class="btn" href="#/import">Импорт</a><a class="btn ghost" href="#/templates/new">Новая форма</a>`,
   );
   const items = await api("/api/templates");
   if (items.length === 0) {
-    view.innerHTML = `<div class="card empty"><h2>Шаблонов ещё нет</h2><p>Шаблон — это вид документа и его поля. Один раз собрали, дальше только заполняете форму.</p></div>`;
+    view.innerHTML = `<div class="card empty"><h2>Форм ещё нет</h2><p>Форма появляется из полей при импорте. Можно собрать и отдельно, если вид документа уже известен.</p></div>`;
   } else {
     view.innerHTML = `<div class="list">${items.map((t) => `
       <a class="card clickable" href="#/templates/${t.id}" style="text-decoration:none;color:inherit">
@@ -195,12 +193,284 @@ async function pageTemplates(view) {
 }
 
 function blankField() {
-  return { id: null, key: "", label: "", type: "text", required: false, options: [] };
+  return { id: null, key: "", label: "", type: "text", required: false, options: [], value: "" };
+}
+
+async function uploadSource(id, file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch(`/api/documents/${id}/source`, { method: "PUT", body: fd });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+async function pageImport(view, query) {
+  setNav("import", "Импорт", "");
+  const templates = await api("/api/templates");
+  const st = {
+    title: "",
+    body: "",
+    file: null,
+    formMode: query.template ? "existing" : "new",
+    formId: query.template || "",
+    formName: "",
+    fields: SAMPLE_HIRE.fields.map((f) => ({ ...f, id: null, value: f.type === "checkbox" ? false : "" })),
+    existing: null,
+    values: {},
+  };
+  if (st.formMode === "existing" && !st.formId && templates[0]) st.formId = templates[0].id;
+  if (st.formMode === "new") st.fields = [blankField()];
+
+  const loadExisting = async () => {
+    if (st.formMode === "existing" && st.formId) {
+      st.existing = await api(`/api/templates/${st.formId}`);
+    } else {
+      st.existing = null;
+    }
+  };
+  await loadExisting();
+
+  const readUi = () => {
+    const form = document.getElementById("import-form");
+    if (!form) return;
+    st.title = form.title.value;
+    st.body = form.body.value;
+    st.formName = form.form_name ? form.form_name.value : st.formName;
+    if (st.formMode === "new") {
+      view.querySelectorAll(".field-card").forEach((card) => {
+        const i = Number(card.dataset.i);
+        const f = st.fields[i];
+        f.label = card.querySelector('[data-k="label"]').value;
+        const keyEl = card.querySelector('[data-k="key"]');
+        f.key = keyEl.value;
+        f.type = card.querySelector('[data-k="type"]').value;
+        f.required = card.querySelector('[data-k="required"]').checked;
+        const opt = card.querySelector('[data-k="options"]');
+        f.options = opt ? opt.value.split(",").map((s) => s.trim()).filter(Boolean) : [];
+        const val = card.querySelector('[data-k="value"]');
+        if (f.type === "checkbox") f.value = !!val?.checked;
+        else if (f.type === "number") f.value = val?.value === "" ? null : Number(val.value);
+        else f.value = val?.value ?? "";
+      });
+    } else if (st.existing) {
+      st.values = collectValues(form, st.existing.fields);
+    }
+  };
+
+  const draw = () => {
+    const fileLabel = st.file ? st.file.name : "Перетащите файл или нажмите — PDF, Word, скан, что угодно из канцелярии";
+    view.innerHTML = `
+      <form class="form-wide" id="import-form">
+        <div class="editor-grid">
+          <div class="grid">
+            <label class="drop" id="drop">
+              <input type="file" id="file">
+              <strong>Исходный файл</strong>
+              <p class="muted" id="file-label">${esc(fileLabel)}</p>
+            </label>
+            <label><span>Название записи</span><input name="title" type="text" required value="${esc(st.title)}" placeholder="Иванов И. И. — приём"></label>
+            <label><span>Текст документа</span><textarea name="body" class="editor-body" placeholder="Пока простой редактор: вставьте или наберите текст. Полноценный Word — позже.">${esc(st.body)}</textarea></label>
+          </div>
+          <div class="grid">
+            <label><span>Форма</span>
+              <select id="form-mode">
+                <option value="new" ${st.formMode === "new" ? "selected" : ""}>новая — указать поля</option>
+                ${templates.map((t) => `<option value="${esc(t.id)}" ${st.formMode === "existing" && st.formId === t.id ? "selected" : ""}>уже есть: ${esc(t.name)}</option>`).join("")}
+              </select>
+            </label>
+            ${st.formMode === "new" ? `
+              <label><span>Как назовём форму</span><input name="form_name" type="text" required value="${esc(st.formName)}" placeholder="Приём на работу"></label>
+              <div>
+                <div class="spread"><h2>Поля</h2><div class="row"><button type="button" class="ghost compact" id="seed-fields">пример</button><button type="button" class="ghost compact" id="add-field">добавить поле</button></div></div>
+                <p class="muted" style="margin:0 0 8px">Подпись и тип — из этого соберётся форма для следующих документов.</p>
+                <div class="list" id="fields"></div>
+              </div>
+            ` : st.existing ? `
+              <p class="muted">Форма «${esc(st.existing.name)}». Заполните поля этой записи.</p>
+              ${st.existing.fields.map((f) => `<label><span>${esc(f.label)}${f.required ? " *" : ""}</span>${fieldControl(f, st.values[f.key])}</label>`).join("")}
+            ` : `<p class="muted">Форм ещё нет — оставьте «новая».</p>`}
+            <div class="row"><button type="submit">Сохранить</button></div>
+          </div>
+        </div>
+      </form>`;
+    if (st.formMode === "new") paintImportFields();
+    bindImport();
+  };
+
+  const paintImportFields = () => {
+    const box = document.getElementById("fields");
+    box.innerHTML = st.fields.map((f, i) => `
+      <div class="field-card" data-i="${i}">
+        <div class="field-grid">
+          <label><span>Подпись</span><input data-k="label" type="text" value="${esc(f.label)}" placeholder="ФИО"></label>
+          <label><span>Ключ</span><input data-k="key" type="text" value="${esc(f.key)}" placeholder="full_name"></label>
+          <label><span>Тип</span>
+            <select data-k="type">${TYPES.map(([v, l]) => `<option value="${v}" ${f.type === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+          </label>
+          <label class="check"><input data-k="required" type="checkbox" ${f.required ? "checked" : ""} ${f.type === "checkbox" ? "disabled" : ""}> обязательно</label>
+        </div>
+        ${f.type === "select" ? `<label><span>Варианты через запятую</span><input data-k="options" type="text" value="${esc((f.options || []).join(", "))}" placeholder="Трудовой, ГПХ"></label>` : ""}
+        <label><span>Значение в этом документе</span>${valueControl(f)}</label>
+        <div class="row">
+          <button type="button" class="ghost compact" data-up ${i === 0 ? "disabled" : ""}>↑</button>
+          <button type="button" class="ghost compact" data-down ${i === st.fields.length - 1 ? "disabled" : ""}>↓</button>
+          <button type="button" class="ghost compact" data-rm>убрать</button>
+        </div>
+      </div>`).join("");
+  };
+
+  const bindImport = () => {
+    const drop = document.getElementById("drop");
+    const fileInput = document.getElementById("file");
+    const onFile = (file) => {
+      st.file = file;
+      document.getElementById("file-label").textContent = file
+        ? file.name
+        : "Перетащите файл или нажмите — PDF, Word, скан, что угодно из канцелярии";
+    };
+    fileInput.addEventListener("change", () => onFile(fileInput.files[0] || null));
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
+    drop.addEventListener("drop", (e) => {
+      e.preventDefault();
+      drop.classList.remove("drag");
+      if (e.dataTransfer.files[0]) onFile(e.dataTransfer.files[0]);
+    });
+    document.getElementById("form-mode").addEventListener("change", async (e) => {
+      readUi();
+      const v = e.target.value;
+      if (v === "new") {
+        st.formMode = "new";
+        st.formId = "";
+      } else {
+        st.formMode = "existing";
+        st.formId = v;
+        await loadExisting();
+      }
+      draw();
+    });
+    document.getElementById("add-field")?.addEventListener("click", () => {
+      readUi();
+      st.fields.push(blankField());
+      draw();
+    });
+    document.getElementById("seed-fields")?.addEventListener("click", () => {
+      readUi();
+      st.formName = st.formName || SAMPLE_HIRE.name;
+      st.fields = SAMPLE_HIRE.fields.map((f) => ({ ...f, id: null, value: f.type === "checkbox" ? false : "" }));
+      draw();
+    });
+    view.querySelectorAll('[data-k="label"]').forEach((input) => {
+      input.addEventListener("input", () => {
+        const key = input.closest(".field-card").querySelector('[data-k="key"]');
+        if (!key.dataset.touched) key.value = slugify(input.value);
+      });
+    });
+    view.querySelectorAll('[data-k="key"]').forEach((input) => {
+      input.addEventListener("input", () => { input.dataset.touched = "1"; });
+    });
+    view.querySelectorAll('[data-k="type"]').forEach((sel) => {
+      sel.addEventListener("change", () => { readUi(); draw(); });
+    });
+    view.querySelectorAll("[data-up]").forEach((btn) => btn.addEventListener("click", () => {
+      const i = Number(btn.closest(".field-card").dataset.i);
+      readUi();
+      [st.fields[i - 1], st.fields[i]] = [st.fields[i], st.fields[i - 1]];
+      draw();
+    }));
+    view.querySelectorAll("[data-down]").forEach((btn) => btn.addEventListener("click", () => {
+      const i = Number(btn.closest(".field-card").dataset.i);
+      readUi();
+      [st.fields[i + 1], st.fields[i]] = [st.fields[i], st.fields[i + 1]];
+      draw();
+    }));
+    view.querySelectorAll("[data-rm]").forEach((btn) => btn.addEventListener("click", () => {
+      const i = Number(btn.closest(".field-card").dataset.i);
+      readUi();
+      st.fields.splice(i, 1);
+      if (!st.fields.length) st.fields.push(blankField());
+      draw();
+    }));
+    document.getElementById("import-form").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      readUi();
+      const values = {};
+      let fields = [];
+      if (st.formMode === "new") {
+        fields = st.fields.map((f) => ({
+          key: f.key || slugify(f.label),
+          label: f.label,
+          type: f.type,
+          required: f.required,
+          options: f.options || [],
+        }));
+        st.fields.forEach((f) => { values[f.key || slugify(f.label)] = f.value; });
+      } else {
+        Object.assign(values, st.values);
+      }
+      try {
+        const saved = await api("/api/import", {
+          method: "POST",
+          body: {
+            title: st.title,
+            body: st.body,
+            form_id: st.formMode === "existing" ? st.formId : null,
+            form_name: st.formMode === "new" ? st.formName : null,
+            fields,
+            values,
+          },
+        });
+        if (st.file) {
+          try {
+            await uploadSource(saved.id, st.file);
+          } catch (e) {
+            toast(`Документ сохранён, файл нет: ${e.message}`, true);
+            location.hash = `#/documents/${saved.id}`;
+            return;
+          }
+        }
+        toast("Документ сохранён, форма готова");
+        location.hash = `#/documents/${saved.id}`;
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+  };
+
+  draw();
+}
+
+function valueControl(field) {
+  const v = field.value == null ? "" : field.value;
+  if (field.type === "textarea") return `<textarea data-k="value">${esc(v)}</textarea>`;
+  if (field.type === "select") {
+    const opts = [`<option value="">—</option>`].concat((field.options || []).map((o) => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`));
+    return `<select data-k="value">${opts.join("")}</select>`;
+  }
+  if (field.type === "checkbox") {
+    return `<label class="check"><input data-k="value" type="checkbox" ${v === true ? "checked" : ""}> да</label>`;
+  }
+  const t = field.type === "number" ? "number" : field.type === "date" ? "date" : "text";
+  const step = field.type === "number" ? " step=\"any\"" : "";
+  return `<input data-k="value" type="${t}"${step} value="${esc(v)}">`;
+}
+
+function collectValues(form, fields) {
+  const values = {};
+  for (const f of fields) {
+    if (f.type === "checkbox") values[f.key] = !!form[f.key]?.checked;
+    else if (f.type === "number") {
+      const raw = form[f.key]?.value ?? "";
+      values[f.key] = raw === "" ? null : Number(raw);
+    } else values[f.key] = form[f.key]?.value ?? "";
+  }
+  return values;
 }
 
 async function pageTemplateEditor(view, id) {
   const isNew = !id;
-  setNav("templates", isNew ? "Новый шаблон" : "Шаблон", "");
+  setNav("templates", isNew ? "Новая форма" : "Форма", "");
   let data = isNew
     ? { name: "", description: "", fields: [blankField()], document_count: 0 }
     : await api(`/api/templates/${id}`);
@@ -320,7 +590,7 @@ async function pageTemplateEditor(view, id) {
         const saved = isNew
           ? await api("/api/templates", { method: "POST", body })
           : await api(`/api/templates/${id}`, { method: "PUT", body });
-        toast("Шаблон сохранён");
+        toast("Форма сохранена");
         location.hash = `#/templates/${saved.id}`;
         if (!isNew && saved.id === id) {
           data = saved;
@@ -331,17 +601,17 @@ async function pageTemplateEditor(view, id) {
       }
     });
     document.getElementById("del-tmpl")?.addEventListener("click", async () => {
-      if (!confirm("Удалить шаблон? Документы по нему должны отсутствовать.")) return;
+      if (!confirm("Удалить форму? Документы по ней должны отсутствовать.")) return;
       try {
         await api(`/api/templates/${id}`, { method: "DELETE" });
-        toast("Шаблон удалён");
+        toast("Форма удалена");
         location.hash = "#/templates";
       } catch (e) {
         toast(e.message, true);
       }
     });
     document.getElementById("new-doc")?.addEventListener("click", () => {
-      location.hash = `#/documents/new?template=${id}`;
+      location.hash = `#/import?template=${id}`;
     });
   };
 
@@ -349,7 +619,7 @@ async function pageTemplateEditor(view, id) {
 }
 
 async function pageDocuments(view, templateId) {
-  setNav("documents", "Документы", `<a class="btn" href="#/documents/new">Новый документ</a>`);
+  setNav("documents", "Документы", `<a class="btn" href="#/import">Импорт</a>`);
   const [docs, templates] = await Promise.all([
     api(templateId ? `/api/documents?template_id=${encodeURIComponent(templateId)}` : "/api/documents"),
     api("/api/templates"),
@@ -363,12 +633,12 @@ async function pageDocuments(view, templateId) {
         </select>
       </label>
     </div>
-    ${docs.length === 0 ? `<div class="card empty"><h2>Документов нет</h2><p>Сначала шаблон, потом регистрация по форме.</p></div>` : `
+    ${docs.length === 0 ? `<div class="card empty"><h2>Документов нет</h2><p>Импортируйте первый — поля укажете в редакторе, форма соберётся сама.</p></div>` : `
       <div class="card" style="padding:8px 16px">
         <table class="table">
-          <thead><tr><th>Документ</th><th>Шаблон</th><th>Изменён</th></tr></thead>
+          <thead><tr><th>Документ</th><th>Форма</th><th>Изменён</th></tr></thead>
           <tbody>
-            ${docs.map((d) => `<tr><td><a href="#/documents/${d.id}">${esc(d.title)}</a></td><td>${esc(d.template_name)}</td><td class="muted">${esc(fmtDate(d.updated_at))}</td></tr>`).join("")}
+            ${docs.map((d) => `<tr><td><a href="#/documents/${d.id}">${esc(d.title)}</a>${d.has_source ? ` <span class="badge">файл</span>` : ""}</td><td>${esc(d.template_name)}</td><td class="muted">${esc(fmtDate(d.updated_at))}</td></tr>`).join("")}
           </tbody>
         </table>
       </div>`}`;
@@ -400,8 +670,7 @@ async function pageDocumentEditor(view, id, templateQuery) {
   if (isNew) {
     const templates = await api("/api/templates");
     if (templates.length === 0) {
-      setNav("documents", "Новый документ", "");
-      view.innerHTML = `<div class="card empty"><h2>Сначала шаблон</h2><p>Без полей регистрировать нечего.</p><p style="margin-top:12px"><a class="btn" href="#/templates/new">Собрать шаблон</a></p></div>`;
+      location.hash = "#/import";
       return;
     }
     let templateId = templateQuery || templates[0].id;
@@ -410,10 +679,11 @@ async function pageDocumentEditor(view, id, templateQuery) {
       setNav("documents", "Новый документ", "");
       view.innerHTML = `
         <form class="form" id="doc-form">
-          <label><span>Шаблон</span>
+          <label><span>Форма</span>
             <select id="tmpl-pick">${templates.map((x) => `<option value="${esc(x.id)}" ${x.id === t.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
           </label>
           <label><span>Название записи</span><input name="title" type="text" required placeholder="Иванов И. И. — приём"></label>
+          <label><span>Текст</span><textarea name="body" class="editor-body"></textarea></label>
           ${t.fields.map((f) => `<label><span>${esc(f.label)}${f.required ? " *" : ""}</span>${fieldControl(f, f.type === "checkbox" ? false : "")}</label>`).join("")}
           <div class="row"><button type="submit">Зарегистрировать</button></div>
         </form>`;
@@ -423,7 +693,7 @@ async function pageDocumentEditor(view, id, templateQuery) {
         try {
           const saved = await api("/api/documents", {
             method: "POST",
-            body: collectDoc(ev.target, t, ev.target.title.value, t.id),
+            body: collectDoc(ev.target, t, ev.target.title.value, t.id, ev.target.body.value),
           });
           toast("Документ сохранён");
           location.hash = `#/documents/${saved.id}`;
@@ -438,21 +708,45 @@ async function pageDocumentEditor(view, id, templateQuery) {
 
   const doc = await api(`/api/documents/${id}`);
   setNav("documents", doc.title, "");
+  const sourceBlock = doc.source
+    ? `<p class="row"><a class="btn ghost compact" href="/api/documents/${doc.id}/source">скачать ${esc(doc.source.name)}</a><button type="button" class="ghost compact" id="rm-file">убрать файл</button></p>`
+    : `<label class="drop" id="drop"><input type="file" id="file"><strong>Приложить файл</strong><p class="muted">необязательно</p></label>`;
   view.innerHTML = `
     <form class="form" id="doc-form">
-      <p class="muted">Шаблон: <a href="#/templates/${doc.template.id}">${esc(doc.template.name)}</a></p>
+      <p class="muted">Форма: <a href="#/templates/${doc.template.id}">${esc(doc.template.name)}</a></p>
+      ${sourceBlock}
       <label><span>Название записи</span><input name="title" type="text" required value="${esc(doc.title)}"></label>
+      <label><span>Текст</span><textarea name="body" class="editor-body">${esc(doc.body || "")}</textarea></label>
       ${doc.template.fields.map((f) => `<label><span>${esc(f.label)}${f.required ? " *" : ""}</span>${fieldControl(f, doc.values[f.key])}</label>`).join("")}
       <div class="row">
         <button type="submit">Сохранить</button>
         <button type="button" class="danger ghost" id="del-doc">удалить</button>
       </div>
     </form>`;
+  document.getElementById("file")?.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      await uploadSource(id, file);
+      toast("Файл приложен");
+      render();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+  document.getElementById("rm-file")?.addEventListener("click", async () => {
+    try {
+      await api(`/api/documents/${id}/source`, { method: "DELETE", body: {} });
+      render();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
   document.getElementById("doc-form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     try {
-      const body = collectDoc(ev.target, doc.template, ev.target.title.value, doc.template.id);
-      const saved = await api(`/api/documents/${id}`, { method: "PUT", body: { title: body.title, values: body.values } });
+      const body = collectDoc(ev.target, doc.template, ev.target.title.value, doc.template.id, ev.target.body.value);
+      const saved = await api(`/api/documents/${id}`, { method: "PUT", body: { title: body.title, body: body.body, values: body.values } });
       document.getElementById("page-title").textContent = saved.title;
       toast("Сохранено");
     } catch (e) {
@@ -471,21 +765,13 @@ async function pageDocumentEditor(view, id, templateQuery) {
   });
 }
 
-function collectDoc(form, template, title, templateId) {
-  const values = {};
-  for (const f of template.fields) {
-    if (f.type === "checkbox") {
-      values[f.key] = !!form[f.key]?.checked;
-    } else {
-      const raw = form[f.key]?.value ?? "";
-      if (f.type === "number") {
-        values[f.key] = raw === "" ? null : Number(raw);
-      } else {
-        values[f.key] = raw;
-      }
-    }
-  }
-  return { template_id: templateId, title, values };
+function collectDoc(form, template, title, templateId, body = "") {
+  return {
+    template_id: templateId,
+    title,
+    body,
+    values: collectValues(form, template.fields),
+  };
 }
 
 async function pageModules(view) {

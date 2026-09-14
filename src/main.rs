@@ -66,8 +66,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    axum::serve(listener, app(AppState { pool }))
-        .await
-        .context("сервер остановился")?;
+    axum::serve(
+        listener,
+        app(AppState {
+            pool,
+            data_dir: data_dir.clone(),
+        }),
+    )
+    .await
+    .context("сервер остановился")?;
     Ok(())
 }
