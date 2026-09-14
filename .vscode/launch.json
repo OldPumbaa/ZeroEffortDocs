@@ -1,0 +1,33 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ZED: запуск",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/zed.exe",
+      "args": ["--no-open"],
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        { "name": "RUST_LOG", "value": "zed=debug,tower_http=info" },
+        { "name": "RUST_BACKTRACE", "value": "1" }
+      ],
+      "console": "integratedTerminal",
+      "preLaunchTask": "cargo: build"
+    },
+    {
+      "name": "ZED: запуск и открыть браузер",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/target/debug/zed.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "environment": [
+        { "name": "RUST_LOG", "value": "zed=debug,tower_http=info" },
+        { "name": "RUST_BACKTRACE", "value": "1" }
+      ],
+      "console": "integratedTerminal",
+      "preLaunchTask": "cargo: build"
+    }
+  ]
+}

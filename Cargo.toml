@@ -1,0 +1,38 @@
+[package]
+name = "zero-effort-docs"
+version = "0.1.0"
+edition = "2021"
+description = "ZeroEffortDocs (ZED) — гибкий документооборот для компаний"
+license = "MIT"
+repository = "https://github.com/OldPumbaa/ZeroEffortDocs"
+default-run = "zed"
+
+[lib]
+name = "zed"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zed"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["json", "macros"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+mime_guess = "2"
+open = "5"
+rust-embed = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

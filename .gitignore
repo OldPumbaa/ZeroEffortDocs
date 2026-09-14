@@ -1,0 +1,11 @@
+/target
+/data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.pdb
+.DS_Store
+Thumbs.db
+.idea
+*.log
