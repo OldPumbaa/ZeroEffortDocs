@@ -291,7 +291,7 @@ async fn create_document(
     State(state): State<AppState>,
     Json(body): Json<UpsertDocument>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let created = documents::create(&state.pool, body).await?;
+    let created = documents::create(&state.pool, &state.data_dir, body).await?;
     Ok((StatusCode::CREATED, Json(json!(created))))
 }
 
@@ -299,7 +299,7 @@ async fn import_document(
     State(state): State<AppState>,
     Json(body): Json<ImportDocument>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let created = documents::import(&state.pool, body).await?;
+    let created = documents::import(&state.pool, &state.data_dir, body).await?;
     Ok((StatusCode::CREATED, Json(json!(created))))
 }
 

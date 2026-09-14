@@ -322,6 +322,26 @@ textarea { min-height: 110px; resize: vertical; }
 body.needs-setup .sidebar,
 body.needs-setup main { visibility: hidden; }
 
+@media print {
+  @page { margin: 16mm; }
+  body {
+    display: block !important;
+    background: #fff !important;
+    color: #000;
+  }
+  .sidebar, .top, #toasts, #modal, #wizard, noscript { display: none !important; }
+  main { padding: 0 !important; }
+  .sheet-grid { display: block !important; max-width: none; }
+  .sheet-grid > .card { display: none !important; }
+  .paper-wrap {
+    box-shadow: none;
+    border: none;
+    padding: 0;
+    min-height: 0;
+  }
+  .chip { background: none; color: inherit; padding: 0; }
+}
+
 @media (max-width: 900px) {
   body { grid-template-columns: 1fr; }
   .sidebar { flex-direction: row; align-items: center; padding: 16px; gap: 16px; }

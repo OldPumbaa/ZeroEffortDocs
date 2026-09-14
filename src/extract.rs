@@ -1,6 +1,8 @@
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 
 use serde::Serialize;
+use serde_json::{Map, Value};
+use zip::write::SimpleFileOptions;
 
 use crate::error::AppError;
 use crate::files;
@@ -78,6 +80,224 @@ fn build_extracted(raw: &str, format: &str) -> Extracted {
         fields,
         format: format.to_string(),
     }
+}
+
+pub fn fill_docx(bytes: &[u8], values: &Map<String, Value>) -> Result<Vec<u8>, AppError> {
+    let reps: Vec<(String, String)> = values
+        .iter()
+        .map(|(k, v)| (k.clone(), value_text(v)))
+        .collect();
+    rewrite_zip(bytes, |xml| fill_xml(xml, &reps))
+}
+
+pub fn normalize_docx(bytes: &[u8]) -> Result<Vec<u8>, AppError> {
+    rewrite_zip(bytes, normalize_xml)
+}
+
+pub fn docx_from_text(text: &str) -> Result<Vec<u8>, AppError> {
+    let mut paras = String::new();
+    for line in text.split('\n') {
+        paras.push_str("<w:p><w:r><w:t xml:space=\"preserve\">");
+        paras.push_str(&xml_escape(line));
+        paras.push_str("</w:t></w:r></w:p>");
+    }
+    if paras.is_empty() {
+        paras.push_str("<w:p/>");
+    }
+    let document = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{paras}</w:body></w:document>"#
+    );
+    let types = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#;
+    let rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
+
+    let mut inner = Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut inner);
+    let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("[Content_Types].xml", opts)?;
+    zip.write_all(types.as_bytes())?;
+    zip.start_file("_rels/.rels", opts)?;
+    zip.write_all(rels.as_bytes())?;
+    zip.start_file("word/document.xml", opts)?;
+    zip.write_all(document.as_bytes())?;
+    zip.finish()?;
+    Ok(inner.into_inner())
+}
+
+fn value_text(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(true) => "да".into(),
+        Value::Bool(false) => "нет".into(),
+        other => other.to_string(),
+    }
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+}
+
+fn should_rewrite(name: &str) -> bool {
+    let n = name.replace('\\', "/");
+    n.starts_with("word/") && n.ends_with(".xml") && !n.contains("/_rels/")
+}
+
+fn rewrite_zip(bytes: &[u8], mut rewrite: impl FnMut(&str) -> String) -> Result<Vec<u8>, AppError> {
+    let mut input = zip::ZipArchive::new(Cursor::new(bytes))?;
+    let mut entries = Vec::new();
+    for i in 0..input.len() {
+        let mut file = input.by_index(i)?;
+        let name = file.name().to_string();
+        if name.ends_with('/') {
+            continue;
+        }
+        let method = file.compression();
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)?;
+        entries.push((name, method, data));
+    }
+    drop(input);
+
+    let mut out = Cursor::new(Vec::new());
+    {
+        let mut zip = zip::ZipWriter::new(&mut out);
+        for (name, method, data) in entries {
+            let opts = SimpleFileOptions::default().compression_method(method);
+            let data = if should_rewrite(&name) {
+                let xml = String::from_utf8_lossy(&data);
+                rewrite(&xml).into_bytes()
+            } else {
+                data
+            };
+            zip.start_file(&name, opts)?;
+            zip.write_all(&data)?;
+        }
+        zip.finish()?;
+    }
+    Ok(out.into_inner())
+}
+
+fn fill_xml(xml: &str, reps: &[(String, String)]) -> String {
+    map_paragraphs(xml, |joined| {
+        let mut t = joined;
+        for (k, v) in reps {
+            t = t.replace(&format!("{{{{{k}}}}}"), v);
+        }
+        t
+    })
+}
+
+fn normalize_xml(xml: &str) -> String {
+    map_paragraphs(xml, |joined| {
+        let mut t = joined;
+        for (original, key, _) in collect_marks(&t) {
+            if original != key {
+                t = t.replace(&format!("{{{{{original}}}}}"), &format!("{{{{{key}}}}}"));
+            }
+        }
+        t
+    })
+}
+
+fn map_paragraphs(xml: &str, mut map: impl FnMut(String) -> String) -> String {
+    let mut out = String::new();
+    let mut rest = xml;
+    while let Some(start) = find_para_start(rest) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let Some(end) = after.find("</w:p>").map(|e| e + 6) else {
+            out.push_str(after);
+            return out;
+        };
+        let para = &after[..end];
+        out.push_str(&rewrite_paragraph(para, map(extract_wt_texts(para))));
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn find_para_start(s: &str) -> Option<usize> {
+    let mut search = 0;
+    while let Some(i) = s[search..].find("<w:p") {
+        let abs = search + i;
+        let next = s[abs + 4..].chars().next();
+        if matches!(next, Some(' ' | '>' | '/')) {
+            return Some(abs);
+        }
+        search = abs + 4;
+    }
+    None
+}
+
+fn extract_wt_texts(para: &str) -> String {
+    let mut out = String::new();
+    let mut rest = para;
+    while let Some(start) = rest.find("<w:t") {
+        let tag = &rest[start..];
+        let Some(gt) = tag.find('>') else { break };
+        if tag[..gt].ends_with('/') {
+            rest = &tag[gt + 1..];
+            continue;
+        }
+        let content = &tag[gt + 1..];
+        let Some(end) = content.find("</w:t>") else {
+            break;
+        };
+        out.push_str(&xml_unescape(&content[..end]));
+        rest = &content[end + 6..];
+    }
+    out
+}
+
+fn rewrite_paragraph(para: &str, new_text: String) -> String {
+    let old = extract_wt_texts(para);
+    if old == new_text || !para.contains("<w:t") {
+        return para.to_string();
+    }
+    let escaped = xml_escape(&new_text);
+    let mut out = String::new();
+    let mut rest = para;
+    let mut first = true;
+    while let Some(start) = rest.find("<w:t") {
+        out.push_str(&rest[..start]);
+        let tag = &rest[start..];
+        let Some(gt) = tag.find('>') else {
+            out.push_str(rest);
+            return out;
+        };
+        if tag[..gt].ends_with('/') {
+            out.push_str(&tag[..=gt]);
+            rest = &tag[gt + 1..];
+            continue;
+        }
+        let content = &tag[gt + 1..];
+        let Some(end) = content.find("</w:t>") else {
+            out.push_str(rest);
+            return out;
+        };
+        if first {
+            out.push_str("<w:t xml:space=\"preserve\">");
+            out.push_str(&escaped);
+            out.push_str("</w:t>");
+            first = false;
+        } else {
+            out.push_str("<w:t></w:t>");
+        }
+        rest = &content[end + 6..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn collect_marks(text: &str) -> Vec<(String, String, String)> {
@@ -319,5 +539,32 @@ mod tests {
         let extracted = from_bytes("a.txt", b"Hello {{full_name}}").unwrap();
         assert_eq!(extracted.fields[0].key, "full_name");
         assert_eq!(extracted.text, "Hello {{full_name}}");
+    }
+
+    #[test]
+    fn fill_split_placeholder() {
+        let bytes = docx_from_paragraphs(&["Сотрудник {{fio}}, приказ {{num}}"], true);
+        let mut values = Map::new();
+        values.insert("fio".into(), Value::String("Иванов И.И.".into()));
+        values.insert("num".into(), serde_json::json!(7));
+        let filled = fill_docx(&bytes, &values).unwrap();
+        let text = docx_text(&filled).unwrap();
+        assert!(text.contains("Иванов И.И."), "{text}");
+        assert!(text.contains('7'), "{text}");
+        assert!(!text.contains("{{fio}}"), "{text}");
+    }
+
+    #[test]
+    fn normalize_then_fill() {
+        let bytes = docx_from_paragraphs(&["ФИО {{ФИО}}"], false);
+        let normalized = normalize_docx(&bytes).unwrap();
+        let extracted = from_bytes("a.docx", &normalized).unwrap();
+        assert!(extracted.text.contains("{{fio}}"));
+        let mut values = Map::new();
+        values.insert("fio".into(), Value::String("Петров".into()));
+        let filled = fill_docx(&normalized, &values).unwrap();
+        let text = docx_text(&filled).unwrap();
+        assert!(text.contains("Петров"));
+        assert!(!text.contains("{{"));
     }
 }

@@ -645,7 +645,7 @@ async function pageFillDocument(view, templateId) {
       <label><span>Название записи</span><input name="title" type="text" required placeholder="${esc(t.name)}"></label>
       ${manual.map((f) => `<label><span>${esc(f.label)}${f.required ? " *" : ""}</span>${fieldControl(f)}</label>`).join("")}
       ${t.fields.filter((f) => f.fill_mode && f.fill_mode !== "manual").map((f) => `<p class="muted">${esc(f.label)}: ${f.fill_mode === "created_at" ? "дата подставится сама" : "номер выдаст система"}</p>`).join("")}
-      <div class="row"><button type="submit">Создать документ</button></div>
+      <div class="row"><button type="submit">Выпустить документ</button></div>
     </form>`;
   document.getElementById("tmpl-pick").addEventListener("change", (e) => {
     location.hash = `#/documents/new?template=${e.target.value}`;
@@ -662,7 +662,7 @@ async function pageFillDocument(view, templateId) {
         method: "POST",
         body: { template_id: t.id, title: ev.target.title.value, body: "", values },
       });
-      toast("Документ создан");
+      toast("Документ готов — можно скачать или распечатать");
       location.hash = `#/documents/${saved.id}`;
     } catch (e) {
       toast(e.message, true);
@@ -685,14 +685,14 @@ function fieldControl(field) {
 
 async function pageDocumentView(view, id) {
   const doc = await api(`/api/documents/${id}`);
-  setNav("documents", doc.title, "");
-  const source = doc.source
-    ? `<p><a class="btn ghost compact" href="/api/documents/${doc.id}/source">скачать ${esc(doc.source.name)}</a></p>`
-    : "";
+  setNav(
+    "documents",
+    doc.title,
+    `<a class="btn" href="/api/documents/${doc.id}/source">Скачать</a><button type="button" class="ghost" id="print-doc">Распечатать</button>`,
+  );
   view.innerHTML = `
     <div class="sheet-grid">
       <div>
-        ${source}
         <div class="paper-wrap" id="paper"></div>
       </div>
       <div class="card">
@@ -700,11 +700,19 @@ async function pageDocumentView(view, id) {
         <dl>
           ${doc.template.fields.map((f) => `<p><span class="muted">${esc(f.label)}</span><br>${esc(fmtValue(doc.values[f.key]))}</p>`).join("")}
         </dl>
-        <button type="button" class="danger ghost" id="del-doc">удалить</button>
+        <div class="row" style="margin-top:12px">
+          <a class="btn" href="/api/documents/${doc.id}/source">Скачать</a>
+          <button type="button" class="ghost" id="print-doc-2">Распечатать</button>
+        </div>
+        <p class="muted" style="margin-top:10px">Скачать — заполненный Word. Распечатать — этот лист. Дальше снова: форма → выпустить документ.</p>
+        <button type="button" class="danger ghost" id="del-doc" style="margin-top:12px">удалить</button>
       </div>
     </div>`;
   hydratePaper(document.getElementById("paper"), doc.body, doc.template.fields);
   document.getElementById("paper").contentEditable = "false";
+  const print = () => window.print();
+  document.getElementById("print-doc")?.addEventListener("click", print);
+  document.getElementById("print-doc-2")?.addEventListener("click", print);
   document.getElementById("del-doc").addEventListener("click", async () => {
     if (!confirm("Удалить документ?")) return;
     try {

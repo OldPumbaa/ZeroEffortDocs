@@ -229,8 +229,17 @@ pub async fn attach_source(
     if let Some(rel) = old.as_deref().filter(|p| !p.is_empty()) {
         files::remove(data_dir, rel);
     }
+    let ext = files::check(filename, bytes)?;
+    let stored: Vec<u8> = if ext == "docx" {
+        crate::extract::normalize_docx(bytes).unwrap_or_else(|err| {
+            tracing::warn!(%err, "не удалось нормализовать docx, кладём как есть");
+            bytes.to_vec()
+        })
+    } else {
+        bytes.to_vec()
+    };
     let (display, mime, rel) =
-        files::save(data_dir, "templates", id, filename, mime, bytes).await?;
+        files::save(data_dir, "templates", id, filename, mime, &stored).await?;
     sqlx::query(
         "UPDATE templates SET source_name = ?, source_mime = ?, source_path = ?, updated_at = ? WHERE id = ?",
     )
@@ -242,6 +251,15 @@ pub async fn attach_source(
     .execute(pool)
     .await?;
     get(pool, id).await
+}
+
+pub async fn source_rel(pool: &SqlitePool, id: &str) -> Result<Option<String>, AppError> {
+    let rel: Option<String> = sqlx::query_scalar("SELECT source_path FROM templates WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+    Ok(rel.filter(|s| !s.is_empty()))
 }
 
 struct PreparedField {

@@ -107,7 +107,11 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<DocumentDetail, AppError
     })
 }
 
-pub async fn create(pool: &SqlitePool, input: UpsertDocument) -> Result<DocumentDetail, AppError> {
+pub async fn create(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    input: UpsertDocument,
+) -> Result<DocumentDetail, AppError> {
     let template = templates::get(pool, &input.template_id).await?;
     let title = require_name(&input.title, "название документа")?;
     let mut values = input.values.clone();
@@ -135,7 +139,56 @@ pub async fn create(pool: &SqlitePool, input: UpsertDocument) -> Result<Document
     .await?;
     write_values(&mut tx, &id, &template.fields, &normalized).await?;
     tx.commit().await?;
+    if let Some((fname, mime, bytes)) =
+        build_output_file(pool, data_dir, &template.id, &title, &body, &render_map).await
+    {
+        if let Err(err) = attach_source(pool, data_dir, &id, &fname, &mime, &bytes).await {
+            tracing::warn!(%err, "не удалось сохранить заполненный Word");
+        }
+    }
     get(pool, &id).await
+}
+
+async fn build_output_file(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    template_id: &str,
+    title: &str,
+    body: &str,
+    values: &Map<String, Value>,
+) -> Option<(String, String, Vec<u8>)> {
+    let mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    let fname = format!("{}.docx", sanitize_filename(title));
+    if let Ok(Some(rel)) = templates::source_rel(pool, template_id).await {
+        if rel.rsplit('.').next() == Some("docx") {
+            if let Ok(raw) = files::read(data_dir, &rel).await {
+                match crate::extract::fill_docx(&raw, values) {
+                    Ok(filled) => return Some((fname, mime.into(), filled)),
+                    Err(err) => tracing::warn!(%err, "не удалось заполнить исходный docx"),
+                }
+            }
+        }
+    }
+    crate::extract::docx_from_text(body)
+        .ok()
+        .map(|bytes| (fname, mime.into(), bytes))
+}
+
+fn sanitize_filename(title: &str) -> String {
+    let s: String = title
+        .chars()
+        .map(|c| match c {
+            '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            other => other,
+        })
+        .take(80)
+        .collect();
+    let s = s.trim().trim_matches('.');
+    if s.is_empty() {
+        "document".into()
+    } else {
+        s.to_string()
+    }
 }
 
 pub async fn update(
@@ -185,7 +238,11 @@ pub async fn delete(pool: &SqlitePool, data_dir: &Path, id: &str) -> Result<(), 
     Ok(())
 }
 
-pub async fn import(pool: &SqlitePool, input: ImportDocument) -> Result<DocumentDetail, AppError> {
+pub async fn import(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    input: ImportDocument,
+) -> Result<DocumentDetail, AppError> {
     let template = if let Some(form_id) = input.form_id.as_deref().filter(|s| !s.is_empty()) {
         templates::get(pool, form_id).await?
     } else {
@@ -203,6 +260,7 @@ pub async fn import(pool: &SqlitePool, input: ImportDocument) -> Result<Document
     };
     create(
         pool,
+        data_dir,
         UpsertDocument {
             template_id: template.id,
             title: input.title,
@@ -263,16 +321,32 @@ pub async fn source_bytes(
     let name: Option<String> = row.try_get("source_name")?;
     let mime: Option<String> = row.try_get("source_mime")?;
     let rel: Option<String> = row.try_get("source_path")?;
-    let (Some(name), Some(rel)) = (name, rel) else {
-        return Err(AppError::NotFound);
-    };
-    if !files::safe_rel(&rel) {
-        return Err(AppError::NotFound);
+    if let (Some(name), Some(rel)) = (name, rel) {
+        if files::safe_rel(&rel) {
+            if let Ok(bytes) = files::read(data_dir, &rel).await {
+                return Ok((
+                    name,
+                    mime.unwrap_or_else(|| {
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            .into()
+                    }),
+                    bytes,
+                ));
+            }
+        }
     }
-    let bytes = files::read(data_dir, &rel).await?;
+    let title: String = sqlx::query_scalar("SELECT title FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    let body: String = sqlx::query_scalar("SELECT body FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    let bytes = crate::extract::docx_from_text(&body)?;
     Ok((
-        name,
-        mime.unwrap_or_else(|| "application/octet-stream".into()),
+        format!("{}.docx", sanitize_filename(&title)),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
         bytes,
     ))
 }
@@ -567,6 +641,7 @@ mod tests {
 
         let err = create(
             &state.pool,
+            &state.data_dir,
             UpsertDocument {
                 template_id: tmpl.id.clone(),
                 title: "Иванов".into(),
@@ -584,6 +659,7 @@ mod tests {
         values.insert("kind".into(), Value::String("Трудовой".into()));
         let doc = create(
             &state.pool,
+            &state.data_dir,
             UpsertDocument {
                 template_id: tmpl.id.clone(),
                 title: "Иванов И.И.".into(),
@@ -613,6 +689,7 @@ mod tests {
         values.insert("start_date".into(), Value::String("2026-01-10".into()));
         let doc = import(
             &state.pool,
+            &state.data_dir,
             ImportDocument {
                 title: "Петров П.П.".into(),
                 body: "текст".into(),
@@ -630,6 +707,7 @@ mod tests {
 
         let again = import(
             &state.pool,
+            &state.data_dir,
             ImportDocument {
                 title: "Сидоров".into(),
                 body: String::new(),
@@ -720,6 +798,7 @@ mod tests {
         values.insert("who".into(), Value::String("Иванов".into()));
         let a = create(
             &state.pool,
+            &state.data_dir,
             UpsertDocument {
                 template_id: tmpl.id.clone(),
                 title: "один".into(),
@@ -731,6 +810,7 @@ mod tests {
         .unwrap();
         let b = create(
             &state.pool,
+            &state.data_dir,
             UpsertDocument {
                 template_id: tmpl.id.clone(),
                 title: "два".into(),
