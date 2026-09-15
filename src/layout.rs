@@ -125,7 +125,13 @@ pub fn fill_placeholders(
         let needle = format!("{{{{{}}}}}", field.key);
         let replacement = match values.get(&field.key) {
             None | Some(serde_json::Value::Null) => String::new(),
-            Some(serde_json::Value::String(s)) => html_escape(s),
+            Some(serde_json::Value::String(s)) => {
+                if field.field_type == crate::model::FieldType::Date {
+                    html_escape(&format_date(s, &field.date_format))
+                } else {
+                    html_escape(s)
+                }
+            }
             Some(serde_json::Value::Number(n)) => n.to_string(),
             Some(serde_json::Value::Bool(true)) => "да".into(),
             Some(serde_json::Value::Bool(false)) => "нет".into(),
@@ -191,6 +197,22 @@ fn render_blocks(blocks: &[Block]) -> String {
 
 fn css_font(name: &str) -> String {
     format!("'{}', Times, serif", name.replace('\'', ""))
+}
+
+pub fn format_date(iso: &str, fmt: &str) -> String {
+    let chrono_fmt = match fmt {
+        "d.m.y" => "%d.%m.%y",
+        "Y-m-d" => "%Y-%m-%d",
+        "d.m.Yg" => "%d.%m.%Y г.",
+        _ => "%d.%m.%Y",
+    };
+    let date = chrono::NaiveDate::parse_from_str(&iso[..iso.len().min(10)], "%Y-%m-%d")
+        .or_else(|_| chrono::NaiveDate::parse_from_str(iso, "%d.%m.%Y"))
+        .or_else(|_| chrono::NaiveDate::parse_from_str(iso, "%d.%m.%y"));
+    match date {
+        Ok(d) => d.format(chrono_fmt).to_string(),
+        Err(_) => iso.to_string(),
+    }
 }
 
 pub fn html_escape(s: &str) -> String {

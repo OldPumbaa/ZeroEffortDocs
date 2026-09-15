@@ -62,6 +62,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             field_type TEXT NOT NULL,
             required INTEGER NOT NULL DEFAULT 0,
             fill_mode TEXT NOT NULL DEFAULT 'manual',
+            config_json TEXT NOT NULL DEFAULT '{}',
             options_json TEXT,
             sort_order INTEGER NOT NULL,
             FOREIGN KEY (template_id) REFERENCES templates(id) ON DELETE CASCADE,
@@ -174,6 +175,13 @@ async fn ensure_extra_columns(pool: &SqlitePool) -> Result<(), AppError> {
     }
 
     let fields = table_columns(pool, "template_fields").await?;
+    if !fields.contains("config_json") {
+        sqlx::query(
+            "ALTER TABLE template_fields ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        .execute(pool)
+        .await?;
+    }
     if !fields.contains("fill_mode") {
         sqlx::query(
             "ALTER TABLE template_fields ADD COLUMN fill_mode TEXT NOT NULL DEFAULT 'manual'",

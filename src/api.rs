@@ -321,7 +321,7 @@ async fn update_document(
     Json(body): Json<PatchDocument>,
 ) -> Result<Json<Value>, AppError> {
     Ok(Json(json!(
-        documents::update(&state.pool, &id, body).await?
+        documents::update(&state.pool, &state.data_dir, &id, body).await?
     )))
 }
 

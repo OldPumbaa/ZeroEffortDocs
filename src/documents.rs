@@ -193,13 +193,23 @@ fn sanitize_filename(title: &str) -> String {
 
 pub async fn update(
     pool: &SqlitePool,
+    data_dir: &Path,
     id: &str,
     input: PatchDocument,
 ) -> Result<DocumentDetail, AppError> {
     let existing = get(pool, id).await?;
     let title = require_name(&input.title, "название документа")?;
-    let body = clamp_body(&input.body)?;
     let normalized = normalize_values(&existing.template.fields, &input.values)?;
+    let render_map = values_by_key(&existing.template.fields, &normalized);
+    let body = if input.body.trim().is_empty() {
+        templates::render_body(
+            &existing.template.body,
+            &existing.template.fields,
+            &render_map,
+        )
+    } else {
+        clamp_body(&input.body)?
+    };
     let ts = now();
     let mut tx = pool.begin().await?;
     sqlx::query("UPDATE documents SET title = ?, body = ?, updated_at = ? WHERE id = ?")
@@ -215,6 +225,20 @@ pub async fn update(
         .await?;
     write_values(&mut tx, id, &existing.template.fields, &normalized).await?;
     tx.commit().await?;
+    if let Some((fname, mime, bytes)) = build_output_file(
+        pool,
+        data_dir,
+        &existing.template.id,
+        &title,
+        &body,
+        &render_map,
+    )
+    .await
+    {
+        if let Err(err) = attach_source(pool, data_dir, id, &fname, &mime, &bytes).await {
+            tracing::warn!(%err, "не удалось обновить файл документа");
+        }
+    }
     get(pool, id).await
 }
 
@@ -519,11 +543,22 @@ async fn apply_autos(
     for field in fields {
         match field.fill_mode {
             FillMode::CreatedAt => {
-                values.insert(field.key.clone(), Value::String(today.clone()));
+                let empty = match values.get(&field.key) {
+                    None | Some(Value::Null) => true,
+                    Some(Value::String(s)) => s.trim().is_empty(),
+                    _ => false,
+                };
+                if empty {
+                    values.insert(field.key.clone(), Value::String(today.clone()));
+                }
             }
             FillMode::Sequence => {
-                let n = next_seq(tx, template_id, &field.key).await?;
-                values.insert(field.key.clone(), serde_json::json!(n));
+                if let Some(n) = values.get(&field.key).and_then(value_i64) {
+                    bump_seq(tx, template_id, &field.key, n + 1, field.seq_start).await?;
+                } else {
+                    let n = next_seq(tx, template_id, &field.key, field.seq_start).await?;
+                    values.insert(field.key.clone(), serde_json::json!(n));
+                }
             }
             FillMode::Manual => {}
         }
@@ -535,19 +570,50 @@ async fn next_seq(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     template_id: &str,
     key: &str,
+    start: i64,
 ) -> Result<i64, AppError> {
     let n: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO sequences (template_id, field_key, next_value) VALUES (?, ?, 1)
+        INSERT INTO sequences (template_id, field_key, next_value) VALUES (?, ?, ?)
         ON CONFLICT(template_id, field_key) DO UPDATE SET next_value = next_value + 1
         RETURNING next_value
         "#,
     )
     .bind(template_id)
     .bind(key)
+    .bind(start.max(1))
     .fetch_one(&mut **tx)
     .await?;
     Ok(n)
+}
+
+async fn bump_seq(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    template_id: &str,
+    key: &str,
+    at_least: i64,
+    start: i64,
+) -> Result<(), AppError> {
+    sqlx::query(
+        r#"
+        INSERT INTO sequences (template_id, field_key, next_value) VALUES (?, ?, ?)
+        ON CONFLICT(template_id, field_key) DO UPDATE SET next_value = MAX(next_value, excluded.next_value)
+        "#,
+    )
+    .bind(template_id)
+    .bind(key)
+    .bind(at_least.max(start).max(1))
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn value_i64(v: &Value) -> Option<i64> {
+    match v {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
 }
 
 fn values_by_key(fields: &[Field], normalized: &[(String, Value)]) -> Map<String, Value> {
@@ -726,31 +792,25 @@ mod tests {
             body: "Приказ: {{full_name}}, дата {{start_date}}, {{kind}}.".into(),
             fields: vec![
                 FieldInput {
-                    id: None,
                     key: "full_name".into(),
                     label: "ФИО".into(),
                     field_type: FieldType::Text,
                     required: true,
-                    fill_mode: FillMode::Manual,
-                    options: vec![],
+                    ..Default::default()
                 },
                 FieldInput {
-                    id: None,
                     key: "start_date".into(),
                     label: "Дата".into(),
                     field_type: FieldType::Date,
                     required: true,
-                    fill_mode: FillMode::Manual,
-                    options: vec![],
+                    ..Default::default()
                 },
                 FieldInput {
-                    id: None,
                     key: "kind".into(),
                     label: "Тип".into(),
                     field_type: FieldType::Select,
-                    required: false,
-                    fill_mode: FillMode::Manual,
                     options: vec!["Трудовой".into(), "ГПХ".into()],
+                    ..Default::default()
                 },
             ],
         }
@@ -888,31 +948,27 @@ mod tests {
                 body: "№ {{num}} от {{when}} — {{who}}".into(),
                 fields: vec![
                     FieldInput {
-                        id: None,
                         key: "who".into(),
                         label: "ФИО".into(),
                         field_type: FieldType::Text,
                         required: true,
-                        fill_mode: FillMode::Manual,
-                        options: vec![],
+                        ..Default::default()
                     },
                     FieldInput {
-                        id: None,
                         key: "when".into(),
                         label: "Дата".into(),
                         field_type: FieldType::Date,
-                        required: false,
                         fill_mode: FillMode::CreatedAt,
-                        options: vec![],
+                        auto: Some(true),
+                        ..Default::default()
                     },
                     FieldInput {
-                        id: None,
                         key: "num".into(),
                         label: "Номер".into(),
                         field_type: FieldType::Number,
-                        required: false,
                         fill_mode: FillMode::Sequence,
-                        options: vec![],
+                        auto: Some(true),
+                        ..Default::default()
                     },
                 ],
             },
@@ -962,13 +1018,11 @@ mod tests {
                 description: String::new(),
                 body: String::new(),
                 fields: vec![FieldInput {
-                    id: None,
                     key: "kind".into(),
                     label: "Тип".into(),
                     field_type: FieldType::Select,
-                    required: false,
-                    fill_mode: FillMode::Manual,
                     options: vec!["один".into()],
+                    ..Default::default()
                 }],
             },
         )

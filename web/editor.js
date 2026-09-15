@@ -64,7 +64,7 @@ function hydrateHtml(html, fields) {
     out += s.slice(last, m.index);
     const key = m[1];
     const f = (fields || []).find((x) => x.key === key);
-    out += `<span class="chip" data-key="${esc(key)}" contenteditable="false">${esc(f ? f.label : key)}</span>`;
+    out += `<span class="chip" data-key="${esc(key)}" contenteditable="false">${esc(f ? f.label : key)}</span>\u200B`;
     last = m.index + m[0].length;
   }
   return out + s.slice(last);
@@ -75,7 +75,7 @@ function dehydrateEl(el) {
   clone.querySelectorAll(".chip").forEach((chip) => {
     chip.replaceWith(document.createTextNode(`{{${chip.dataset.key}}}`));
   });
-  return clone.innerHTML;
+  return clone.innerHTML.replace(/\u200B/g, "");
 }
 
 function harvestLayout(page) {
@@ -152,7 +152,9 @@ function toolbarHtml() {
       <option value="3">3 листа</option>
     </select>
     <button type="button" class="ghost compact" id="zed-add-p">+ блок</button>
-    <button type="button" class="btn compact" id="zed-field">Поле</button>
+    <select id="zed-place-field" title="вставить существующее поле">
+      <option value="">Вставить поле…</option>
+    </select>
   </div>`;
 }
 
@@ -210,6 +212,20 @@ function bindBlockEditor(page, layout, ctx) {
     if (e.target.classList.contains("zed-edit")) window._zedLastEdit = e.target;
   });
   page.addEventListener("keydown", (e) => {
+    if ((e.key === "Backspace" || e.key === "Delete") && e.target.classList.contains("zed-edit")) {
+      const on = page.querySelector(".chip.chip-on");
+      if (on) {
+        e.preventDefault();
+        on.remove();
+        return;
+      }
+      const chip = adjacentChip(e.target, e.key === "Backspace" ? "back" : "del");
+      if (chip) {
+        e.preventDefault();
+        chip.remove();
+        return;
+      }
+    }
     if (e.key !== "Tab" || !e.target.classList.contains("zed-edit")) return;
     const block = e.target.closest(".zed-block");
     if (!block || Number(block.dataset.cols || 1) !== 1) return;
@@ -217,6 +233,13 @@ function bindBlockEditor(page, layout, ctx) {
     let n = Number(block.dataset.indent || 0);
     n = e.shiftKey ? Math.max(0, n - 1) : Math.min(4, n + 1);
     setIndent(block, n);
+  });
+  page.addEventListener("mousedown", (e) => {
+    const chip = e.target.closest(".chip");
+    page.querySelectorAll(".chip.chip-on").forEach((c) => c.classList.remove("chip-on"));
+    if (chip && page.contains(chip)) {
+      chip.classList.add("chip-on");
+    }
   });
   page.addEventListener("click", (e) => {
     const node = e.target.closest(".zed-block");
@@ -253,6 +276,7 @@ function bindBlockEditor(page, layout, ctx) {
       if (edit) edit.focus();
       document.execCommand("styleWithCSS", false, true);
       document.execCommand(btn.dataset.cmd, false, null);
+      styleChips(page, btn.dataset.cmd);
     });
   });
 
@@ -299,17 +323,27 @@ function bindBlockEditor(page, layout, ctx) {
     page.lastElementChild.querySelector(".zed-edit").focus();
   });
 
-  document.getElementById("zed-field").addEventListener("click", () => {
+  const place = document.getElementById("zed-place-field");
+  const refreshPlace = () => {
+    if (!place) return;
+    const cur = place.value;
+    place.innerHTML = `<option value="">Вставить поле…</option>`
+      + (ctx.fields() || []).map((f) => `<option value="${esc(f.key)}">${esc(f.label)}</option>`).join("");
+    place.value = cur && [...place.options].some((o) => o.value === cur) ? cur : "";
+  };
+  refreshPlace();
+  place?.addEventListener("change", () => {
+    const key = place.value;
+    place.value = "";
+    if (!key) return;
+    const field = (ctx.fields() || []).find((f) => f.key === key);
+    if (!field) return;
     const edit = focusedEdit();
     if (!edit) {
-      toast("Поставьте курсор в блок", true);
+      toast("Поставьте курсор туда, куда вставить поле", true);
       return;
     }
-    const sel = window.getSelection();
-    const picked = (sel && !sel.isCollapsed && edit.contains(sel.anchorNode))
-      ? sel.toString().trim()
-      : "";
-    ctx.markField(edit, picked);
+    insertChipAt(edit, field);
   });
 
   return {
@@ -318,21 +352,73 @@ function bindBlockEditor(page, layout, ctx) {
       layout.blocks = blocks;
       page.innerHTML = blocks.map((b) => renderBlock(b, ctx.fields())).join("");
     },
-    insertChip: (edit, field) => {
-      edit.focus();
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.dataset.key = field.key;
-      chip.contentEditable = "false";
-      chip.textContent = field.label;
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount && edit.contains(sel.anchorNode)) {
-        const range = sel.getRangeAt(0);
-        range.deleteContents();
-        range.insertNode(chip);
-      } else {
-        edit.appendChild(chip);
-      }
-    },
+    insertChip: (edit, field) => insertChipAt(edit, field),
+    refreshPlace,
   };
+}
+
+function insertChipAt(edit, field) {
+  edit.focus();
+  const chip = document.createElement("span");
+  chip.className = "chip";
+  chip.dataset.key = field.key;
+  chip.contentEditable = "false";
+  chip.textContent = field.label;
+  const z = document.createTextNode("\u200B");
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount && edit.contains(sel.anchorNode)) {
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(z);
+    range.insertNode(chip);
+  } else {
+    edit.appendChild(chip);
+    edit.appendChild(z);
+  }
+}
+
+function adjacentChip(edit, dir) {
+  const sel = window.getSelection();
+  if (!sel || !sel.isCollapsed || sel.rangeCount === 0) return null;
+  const node = sel.anchorNode;
+  const off = sel.anchorOffset;
+  const isChip = (n) => n && n.nodeType === 1 && n.classList && n.classList.contains("chip");
+  if (dir === "back") {
+    if (node === edit && off > 0) {
+      const prev = edit.childNodes[off - 1];
+      if (isChip(prev)) return prev;
+    }
+    if (node.nodeType === 3 && off === 0) {
+      let prev = node.previousSibling;
+      if (prev && prev.nodeType === 3 && prev.textContent === "\u200B") prev = prev.previousSibling;
+      if (isChip(prev)) return prev;
+    }
+  } else {
+    if (node === edit && off < edit.childNodes.length) {
+      const next = edit.childNodes[off];
+      if (isChip(next)) return next;
+    }
+    if (node.nodeType === 3 && off === node.textContent.length) {
+      let next = node.nextSibling;
+      if (next && next.nodeType === 3 && next.textContent === "\u200B") next = next.nextSibling;
+      if (isChip(next)) return next;
+    }
+  }
+  return null;
+}
+
+function styleChips(page, cmd) {
+  const sel = window.getSelection();
+  const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+  page.querySelectorAll(".chip").forEach((chip) => {
+    const hit = chip.classList.contains("chip-on") || (range && range.intersectsNode(chip));
+    if (!hit) return;
+    if (cmd === "bold") {
+      chip.style.fontWeight = chip.style.fontWeight === "bold" || chip.style.fontWeight === "700" ? "" : "bold";
+    } else if (cmd === "italic") {
+      chip.style.fontStyle = chip.style.fontStyle === "italic" ? "" : "italic";
+    } else if (cmd === "underline") {
+      chip.style.textDecoration = chip.style.textDecoration.includes("underline") ? "" : "underline";
+    }
+  });
 }

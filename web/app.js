@@ -5,11 +5,37 @@ const RU = {
   ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
 };
 
-const FILL = [
-  ["manual", "Вписать вручную"],
-  ["created_at", "Дата при создании"],
-  ["sequence", "Номер по порядку"],
+const DATE_FMTS = [
+  ["d.m.Y", "15.09.2026"],
+  ["d.m.y", "15.09.26"],
+  ["Y-m-d", "2026-09-15"],
+  ["d.m.Yg", "15.09.2026 г."],
 ];
+
+function fieldCardHtml(f, i) {
+  const type = f.type === "date" || f.type === "number" ? f.type : "text";
+  const auto = !!f.auto;
+  return `<div class="field-card" data-i="${i}">
+    <label><span>Подпись</span><input data-k="label" type="text" value="${esc(f.label)}"></label>
+    <label><span>Тип</span>
+      <select data-k="type">
+        <option value="text" ${type === "text" ? "selected" : ""}>Текст</option>
+        <option value="date" ${type === "date" ? "selected" : ""}>Дата</option>
+        <option value="number" ${type === "number" ? "selected" : ""}>Номер</option>
+      </select>
+    </label>
+    ${type === "text" ? `<label class="check"><input data-k="required" type="checkbox" ${f.required ? "checked" : ""}> обязательно</label>` : ""}
+    ${type === "date" ? `
+      <label class="check"><input data-k="auto" type="checkbox" ${auto ? "checked" : ""}> текущая дата</label>
+      <label><span>Формат</span>
+        <select data-k="date_format">${DATE_FMTS.map(([v, l]) => `<option value="${v}" ${(f.date_format || "d.m.Y") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+      </label>` : ""}
+    ${type === "number" ? `
+      <label class="check"><input data-k="auto" type="checkbox" ${auto ? "checked" : ""}> по порядку</label>
+      ${auto ? `<label><span>Начинать с</span><input data-k="seq_start" type="number" min="1" value="${esc(f.seq_start || 1)}"></label>` : ""}` : ""}
+    <button type="button" class="ghost compact" data-rm>убрать из формы</button>
+  </div>`;
+}
 
 function esc(s) {
   return String(s ?? "").replace(/[&<>"'`]/g, (c) => ({
@@ -411,10 +437,14 @@ async function pageTemplateEditor(view, id, query) {
       id: f.id,
       key: f.key,
       label: f.label,
-      type: f.type,
+      type: f.type === "date" || f.type === "number" ? f.type : "text",
       required: f.required,
       fill_mode: f.fill_mode || "manual",
       options: f.options || [],
+      auto: !!f.auto,
+      date_format: f.date_format || "d.m.Y",
+      seq_start: f.seq_start || 1,
+      next: f.next,
     })),
     file: null,
   };
@@ -447,7 +477,8 @@ async function pageTemplateEditor(view, id, query) {
         </div>
         <div class="zed-workspace-side">
           <h2>Форма</h2>
-          <p class="muted">Поля, которые заполняют вместо поиска по договору.</p>
+          <p class="muted">Создайте поле, потом вставьте его на лист через «Вставить поле».</p>
+          <button type="button" class="ghost compact" id="new-field">+ новое поле</button>
           <div class="list" id="field-list"></div>
           <div class="row" style="margin-top:12px">
             <button type="button" class="btn" id="save-tmpl">Сохранить</button>
@@ -458,16 +489,6 @@ async function pageTemplateEditor(view, id, query) {
     paintFields();
     ed = bindBlockEditor(document.getElementById("zed-page"), layout, {
       fields: () => st.fields,
-      markField: (edit, picked) => {
-        readFields();
-        const label = picked || window.prompt("Подпись поля", "ФИО");
-        if (!label) return;
-        const key = uniqueKey(label, st.fields);
-        const field = { key, label, type: "text", required: true, fill_mode: "manual", options: [] };
-        st.fields.push(field);
-        ed.insertChip(edit, field);
-        paintFields();
-      },
     });
     bindRest();
   };
@@ -475,20 +496,13 @@ async function pageTemplateEditor(view, id, query) {
   const paintFields = () => {
     const box = document.getElementById("field-list");
     if (!st.fields.length) {
-      box.innerHTML = `<p class="muted">Полей пока нет. Выделите место на листе.</p>`;
+      box.innerHTML = `<p class="muted">Полей пока нет.</p>`;
+      ed?.refreshPlace?.();
       return;
     }
-    box.innerHTML = st.fields.map((f, i) => `
-      <div class="field-card" data-i="${i}">
-        <label><span>Подпись</span><input data-k="label" type="text" value="${esc(f.label)}"></label>
-        <label><span>Как заполнять</span>
-          <select data-k="fill_mode">${FILL.map(([v, l]) => `<option value="${v}" ${f.fill_mode === v ? "selected" : ""}>${l}</option>`).join("")}</select>
-        </label>
-        ${f.fill_mode === "manual" ? `<label class="check"><input data-k="required" type="checkbox" ${f.required ? "checked" : ""}> обязательно</label>` : `<p class="muted">${f.fill_mode === "created_at" ? "Подставится дата создания документа." : "Номер хранится и растёт сам."}</p>`}
-        <button type="button" class="ghost compact" data-rm>убрать</button>
-      </div>`).join("");
+    box.innerHTML = st.fields.map((f, i) => fieldCardHtml(f, i)).join("");
     box.querySelectorAll("[data-k]").forEach((el) => {
-      el.addEventListener("change", () => readFields());
+      el.addEventListener("change", () => { readFields(); paintFields(); });
       el.addEventListener("input", () => {
         if (el.dataset.k === "label") {
           const i = Number(el.closest(".field-card").dataset.i);
@@ -504,24 +518,27 @@ async function pageTemplateEditor(view, id, query) {
         const i = Number(btn.closest(".field-card").dataset.i);
         const key = st.fields[i].key;
         st.fields.splice(i, 1);
-        document.querySelectorAll(`.chip[data-key="${key}"]`).forEach((chip) => {
-          chip.replaceWith(document.createTextNode(chip.textContent));
-        });
+        document.querySelectorAll(`.chip[data-key="${key}"]`).forEach((chip) => chip.remove());
         paintFields();
       });
     });
+    ed?.refreshPlace?.();
   };
 
   const readFields = () => {
     view.querySelectorAll(".field-card").forEach((card) => {
       const f = st.fields[Number(card.dataset.i)];
+      if (!f) return;
       f.label = card.querySelector('[data-k="label"]').value;
-      f.fill_mode = card.querySelector('[data-k="fill_mode"]').value;
-      const req = card.querySelector('[data-k="required"]');
-      f.required = f.fill_mode === "manual" ? !!req?.checked : false;
-      if (f.fill_mode === "created_at") f.type = "date";
-      else if (f.fill_mode === "sequence") f.type = "number";
-      else f.type = "text";
+      f.type = card.querySelector('[data-k="type"]').value;
+      f.required = !!card.querySelector('[data-k="required"]')?.checked;
+      f.auto = !!card.querySelector('[data-k="auto"]')?.checked;
+      f.date_format = card.querySelector('[data-k="date_format"]')?.value || "d.m.Y";
+      const start = card.querySelector('[data-k="seq_start"]');
+      f.seq_start = start ? Number(start.value || 1) : 1;
+      if (f.type === "date") f.fill_mode = f.auto ? "created_at" : "manual";
+      else if (f.type === "number") f.fill_mode = f.auto ? "sequence" : "manual";
+      else f.fill_mode = "manual";
     });
   };
 
@@ -542,6 +559,9 @@ async function pageTemplateEditor(view, id, query) {
             type: f.type,
             required: f.required,
             fill_mode: f.fill_mode,
+            auto: !!f.auto,
+            date_format: f.date_format || "d.m.Y",
+            seq_start: Number(f.seq_start || 1),
             options: f.options || [],
           })),
         };
@@ -567,6 +587,23 @@ async function pageTemplateEditor(view, id, query) {
         toast(e.message, true);
       }
     };
+    document.getElementById("new-field")?.addEventListener("click", () => {
+      readFields();
+      const n = st.fields.length + 1;
+      const label = `Поле ${n}`;
+      st.fields.push({
+        key: uniqueKey(label, st.fields),
+        label,
+        type: "text",
+        required: false,
+        fill_mode: "manual",
+        auto: false,
+        date_format: "d.m.Y",
+        seq_start: 1,
+        options: [],
+      });
+      paintFields();
+    });
     document.getElementById("save-tmpl").addEventListener("click", save);
     document.getElementById("save-tmpl-top")?.addEventListener("click", save);
     const pagesSel = document.getElementById("zed-pages");
@@ -612,9 +649,12 @@ async function pageTemplateEditor(view, id, query) {
               id: null,
               key: f.key,
               label: f.label,
-              type: f.type,
+              type: f.type === "date" || f.type === "number" ? f.type : "text",
               required: !!f.required,
               fill_mode: f.fill_mode || "manual",
+              auto: f.fill_mode === "created_at" || f.fill_mode === "sequence",
+              date_format: "d.m.Y",
+              seq_start: 1,
               options: [],
             });
           }
@@ -676,15 +716,14 @@ async function pageFillDocument(view, templateId) {
   const tid = templateId || templates[0].id;
   const t = await api(`/api/templates/${tid}`);
   setNav("documents", "По шаблону", "");
-  const manual = t.fields.filter((f) => (f.fill_mode || "manual") === "manual");
+  const today = todayIso();
   view.innerHTML = `
     <form class="form form-wide" id="fill">
       <label><span>Шаблон</span>
         <select id="tmpl-pick">${templates.map((x) => `<option value="${esc(x.id)}" ${x.id === t.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
       </label>
       <label><span>Название записи</span><input name="title" type="text" required placeholder="${esc(t.name)}"></label>
-      ${manual.map((f) => `<label><span>${esc(f.label)}${f.required ? " *" : ""}</span>${fieldControl(f)}</label>`).join("")}
-      ${t.fields.filter((f) => f.fill_mode && f.fill_mode !== "manual").map((f) => `<p class="muted">${esc(f.label)}: ${f.fill_mode === "created_at" ? "дата подставится сама" : "номер выдаст система"}</p>`).join("")}
+      ${t.fields.map((f) => fillFieldRow(f, today)).join("")}
       <div class="row"><button type="submit">Выпустить документ</button></div>
     </form>`;
   document.getElementById("tmpl-pick").addEventListener("change", (e) => {
@@ -693,7 +732,7 @@ async function pageFillDocument(view, templateId) {
   document.getElementById("fill").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const values = {};
-    for (const f of manual) {
+    for (const f of t.fields) {
       const raw = ev.target[f.key]?.value ?? "";
       values[f.key] = f.type === "number" && raw !== "" ? Number(raw) : raw;
     }
@@ -708,6 +747,44 @@ async function pageFillDocument(view, templateId) {
       toast(e.message, true);
     }
   });
+}
+
+function todayIso() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function formatDateIso(iso, fmt) {
+  if (!iso) return "";
+  const d = new Date(`${iso.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n) => String(n).padStart(2, "0");
+  const dd = pad(d.getDate());
+  const mm = pad(d.getMonth() + 1);
+  const yyyy = d.getFullYear();
+  const yy = String(yyyy).slice(-2);
+  if (fmt === "d.m.y") return `${dd}.${mm}.${yy}`;
+  if (fmt === "Y-m-d") return `${yyyy}-${mm}-${dd}`;
+  if (fmt === "d.m.Yg") return `${dd}.${mm}.${yyyy} г.`;
+  return `${dd}.${mm}.${yyyy}`;
+}
+
+function fillFieldRow(f, today) {
+  const req = f.required && !f.auto ? " *" : "";
+  if (f.type === "date") {
+    const val = f.auto ? today : "";
+    const hint = f.auto ? `сейчас: ${formatDateIso(today, f.date_format || "d.m.Y")}` : "";
+    return `<label><span>${esc(f.label)}${req} ${hint ? `<small class="muted">${esc(hint)}</small>` : ""}</span>
+      <input name="${esc(f.key)}" type="date" value="${esc(val)}"></label>`;
+  }
+  if (f.type === "number") {
+    const val = f.auto ? (f.next ?? f.seq_start ?? 1) : "";
+    const hint = f.auto ? "можно поменять" : "";
+    return `<label><span>${esc(f.label)}${req} ${hint ? `<small class="muted">${esc(hint)}</small>` : ""}</span>
+      <input name="${esc(f.key)}" type="number" value="${esc(val)}"></label>`;
+  }
+  return `<label><span>${esc(f.label)}${req}</span><input name="${esc(f.key)}" type="text"></label>`;
 }
 
 function fieldControl(field) {
@@ -737,9 +814,21 @@ async function pageDocumentView(view, id) {
       </div>
       <div class="card">
         <p class="muted">Шаблон: <a href="#/templates/${doc.template.id}">${esc(doc.template.name)}</a></p>
-        <dl>
-          ${doc.template.fields.map((f) => `<p><span class="muted">${esc(f.label)}</span><br>${esc(fmtValue(doc.values[f.key]))}</p>`).join("")}
-        </dl>
+        <form id="fix-fields" class="form" style="max-width:none">
+          <label><span>Название записи</span><input name="title" type="text" required value="${esc(doc.title)}"></label>
+          ${doc.template.fields.map((f) => {
+            const v = doc.values[f.key];
+            if (f.type === "date") {
+              const iso = (v && String(v).slice(0, 10)) || "";
+              return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="date" value="${esc(iso)}"></label>`;
+            }
+            if (f.type === "number") {
+              return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="number" value="${esc(v ?? "")}"></label>`;
+            }
+            return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="text" value="${esc(v ?? "")}"></label>`;
+          }).join("")}
+          <button type="submit">Сохранить правки</button>
+        </form>
         <div class="row" style="margin-top:12px">
           <a class="btn ghost" href="/api/documents/${doc.id}/export/original">Оригинал</a>
           <a class="btn ghost" href="/api/documents/${doc.id}/export/pdf">PDF</a>
@@ -766,6 +855,24 @@ async function pageDocumentView(view, id) {
   };
   document.getElementById("print-doc")?.addEventListener("click", printDoc);
   document.getElementById("print-doc-2")?.addEventListener("click", printDoc);
+  document.getElementById("fix-fields")?.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const values = {};
+    for (const f of doc.template.fields) {
+      const raw = ev.target[f.key]?.value ?? "";
+      values[f.key] = f.type === "number" && raw !== "" ? Number(raw) : raw;
+    }
+    try {
+      await api(`/api/documents/${id}`, {
+        method: "PUT",
+        body: { title: ev.target.title.value, body: "", values },
+      });
+      toast("Исправлено");
+      render();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
   document.getElementById("del-doc").addEventListener("click", async () => {
     if (!confirm("Удалить документ?")) return;
     try {

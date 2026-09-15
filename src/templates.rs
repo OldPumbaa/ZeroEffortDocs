@@ -86,7 +86,7 @@ pub async fn get(pool: &SqlitePool, id: &str) -> Result<TemplateDetail, AppError
 
 pub async fn fields_of(pool: &SqlitePool, template_id: &str) -> Result<Vec<Field>, AppError> {
     let rows = sqlx::query(
-        "SELECT id, key, label, field_type, required, fill_mode, options_json, sort_order FROM template_fields WHERE template_id = ? ORDER BY sort_order, key",
+        "SELECT id, key, label, field_type, required, fill_mode, options_json, config_json, sort_order FROM template_fields WHERE template_id = ? ORDER BY sort_order, key",
     )
     .bind(template_id)
     .fetch_all(pool)
@@ -100,14 +100,27 @@ pub async fn fields_of(pool: &SqlitePool, template_id: &str) -> Result<Vec<Field
         };
         let required: i64 = row.try_get("required")?;
         let type_raw: String = row.try_get("field_type")?;
+        let key: String = row.try_get("key")?;
+        let fill_mode = FillMode::parse(&row.try_get::<String, _>("fill_mode")?)?;
+        let config_raw: String = row.try_get("config_json").unwrap_or_default();
+        let (date_format, auto, seq_start) = parse_config(Some(&config_raw), fill_mode);
+        let next = if fill_mode == FillMode::Sequence {
+            Some(peek_seq(pool, template_id, &key, seq_start).await?)
+        } else {
+            None
+        };
         fields.push(Field {
             id: row.try_get("id")?,
-            key: row.try_get("key")?,
+            key,
             label: row.try_get("label")?,
             field_type: FieldType::parse(&type_raw)?,
             required: required != 0,
-            fill_mode: FillMode::parse(&row.try_get::<String, _>("fill_mode")?)?,
+            fill_mode,
             options,
+            auto,
+            date_format,
+            seq_start,
+            next,
         });
     }
     Ok(fields)
@@ -270,6 +283,7 @@ struct PreparedField {
     required: bool,
     fill_mode: FillMode,
     options_json: Option<String>,
+    config_json: String,
 }
 
 fn prepare_fields(
@@ -292,14 +306,39 @@ fn prepare_fields(
             return Err(AppError::bad(format!("ключ «{key}» повторяется")));
         }
         let label = require_name(&input.label, "подпись поля")?;
-        let fill_mode = input.fill_mode;
-        let field_type = match fill_mode {
-            FillMode::CreatedAt => FieldType::Date,
-            FillMode::Sequence => FieldType::Number,
-            FillMode::Manual => input.field_type,
+        let auto = input.auto.unwrap_or(matches!(
+            input.fill_mode,
+            FillMode::CreatedAt | FillMode::Sequence
+        ));
+        let mut field_type = input.field_type;
+        let fill_mode = if field_type == FieldType::Date && auto {
+            FillMode::CreatedAt
+        } else if field_type == FieldType::Number && auto {
+            FillMode::Sequence
+        } else if input.fill_mode == FillMode::CreatedAt {
+            field_type = FieldType::Date;
+            FillMode::CreatedAt
+        } else if input.fill_mode == FillMode::Sequence {
+            field_type = FieldType::Number;
+            FillMode::Sequence
+        } else {
+            FillMode::Manual
         };
         let required =
             fill_mode == FillMode::Manual && input.required && field_type != FieldType::Checkbox;
+        let date_format = input
+            .date_format
+            .as_deref()
+            .unwrap_or("d.m.Y")
+            .trim()
+            .to_string();
+        let seq_start = input.seq_start.unwrap_or(1).max(1);
+        let config_json = serde_json::json!({
+            "date_format": date_format,
+            "auto": auto,
+            "seq_start": seq_start,
+        })
+        .to_string();
         if field_type == FieldType::Select {
             let options: Vec<String> = input
                 .options
@@ -321,6 +360,7 @@ fn prepare_fields(
                 required,
                 fill_mode,
                 options_json: Some(options_json),
+                config_json,
             });
         } else {
             prepared.push(PreparedField {
@@ -331,6 +371,7 @@ fn prepare_fields(
                 required,
                 fill_mode,
                 options_json: None,
+                config_json,
             });
         }
     }
@@ -353,7 +394,7 @@ async fn insert_fields(
 ) -> Result<(), AppError> {
     for (i, field) in fields.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO template_fields (id, template_id, key, label, field_type, required, fill_mode, options_json, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO template_fields (id, template_id, key, label, field_type, required, fill_mode, options_json, config_json, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&field.id)
         .bind(template_id)
@@ -363,11 +404,50 @@ async fn insert_fields(
         .bind(field.required as i64)
         .bind(field.fill_mode.as_str())
         .bind(&field.options_json)
+        .bind(&field.config_json)
         .bind(i as i64)
         .execute(&mut **tx)
         .await?;
     }
     Ok(())
+}
+
+fn parse_config(raw: Option<&str>, fill_mode: FillMode) -> (String, bool, i64) {
+    let mut date_format = "d.m.Y".to_string();
+    let mut auto = matches!(fill_mode, FillMode::CreatedAt | FillMode::Sequence);
+    let mut seq_start = 1i64;
+    if let Some(raw) = raw {
+        if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str(raw) {
+            if let Some(s) = obj.get("date_format").and_then(|x| x.as_str()) {
+                if !s.is_empty() {
+                    date_format = s.to_string();
+                }
+            }
+            if let Some(b) = obj.get("auto").and_then(|x| x.as_bool()) {
+                auto = b;
+            }
+            if let Some(n) = obj.get("seq_start").and_then(|x| x.as_i64()) {
+                seq_start = n.max(1);
+            }
+        }
+    }
+    (date_format, auto, seq_start)
+}
+
+async fn peek_seq(
+    pool: &sqlx::SqlitePool,
+    template_id: &str,
+    key: &str,
+    start: i64,
+) -> Result<i64, AppError> {
+    let v: Option<i64> = sqlx::query_scalar(
+        "SELECT next_value FROM sequences WHERE template_id = ? AND field_key = ?",
+    )
+    .bind(template_id)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
+    Ok(v.unwrap_or(start))
 }
 
 fn clamp_body(body: &str) -> Result<String, AppError> {

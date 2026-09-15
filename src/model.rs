@@ -80,6 +80,14 @@ pub struct Field {
     pub fill_mode: FillMode,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    #[serde(default)]
+    pub auto: bool,
+    #[serde(default = "default_date_format")]
+    pub date_format: String,
+    #[serde(default = "default_seq_start")]
+    pub seq_start: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,6 +103,37 @@ pub struct FieldInput {
     pub fill_mode: FillMode,
     #[serde(default)]
     pub options: Vec<String>,
+    #[serde(default)]
+    pub auto: Option<bool>,
+    #[serde(default)]
+    pub date_format: Option<String>,
+    #[serde(default)]
+    pub seq_start: Option<i64>,
+}
+
+impl Default for FieldInput {
+    fn default() -> Self {
+        Self {
+            id: None,
+            key: String::new(),
+            label: String::new(),
+            field_type: FieldType::Text,
+            required: false,
+            fill_mode: FillMode::Manual,
+            options: Vec::new(),
+            auto: None,
+            date_format: None,
+            seq_start: None,
+        }
+    }
+}
+
+fn default_date_format() -> String {
+    "d.m.Y".into()
+}
+
+fn default_seq_start() -> i64 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize)]

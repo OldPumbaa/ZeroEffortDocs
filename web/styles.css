@@ -431,10 +431,11 @@ body.editor-mode #view {
   color: var(--forest);
   border-radius: 6px;
   padding: 0 6px;
-  font-family: "Segoe UI", system-ui, sans-serif;
-  font-size: 14px;
-  cursor: default;
+  font: inherit;
+  cursor: pointer;
+  user-select: all;
 }
+.chip.chip-on { outline: 2px solid var(--forest); }
 .sheet-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) 320px;
