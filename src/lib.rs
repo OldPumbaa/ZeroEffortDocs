@@ -4,6 +4,7 @@ pub mod documents;
 pub mod error;
 pub mod extract;
 pub mod files;
+pub mod layout;
 pub mod model;
 pub mod modules;
 pub mod preview;

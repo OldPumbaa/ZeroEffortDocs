@@ -23,6 +23,12 @@ pub const CATALOG: &[ModuleInfo] = &[
         description: "Старые файлы компании: кладёте папку как есть, ищете по имени и содержимому. Не путать с живыми документами ZED.",
         available: false,
     },
+    ModuleInfo {
+        id: "libreoffice",
+        name: "LibreOffice Online",
+        description: "Предпросмотр и печать через уже установленный LibreOffice, позже — полноценный просмотр в браузере. Пока заглушка: галочку можно поставить заранее.",
+        available: false,
+    },
 ];
 
 pub fn info(id: &str) -> Result<&'static ModuleInfo, AppError> {

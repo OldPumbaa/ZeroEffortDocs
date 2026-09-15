@@ -364,7 +364,9 @@ pub async fn preview_html(
     let title: String = sqlx::Row::try_get(&row, "title")?;
     let body: String = sqlx::Row::try_get(&row, "body")?;
     let (name, _, bytes) = source_bytes(pool, data_dir, id).await?;
-    let inner = if name.to_ascii_lowercase().ends_with(".docx") || bytes.starts_with(b"PK") {
+    let inner = if crate::layout::is_html(&body) || crate::layout::is_layout_json(&body) {
+        crate::layout::to_html(&body)
+    } else if name.to_ascii_lowercase().ends_with(".docx") || bytes.starts_with(b"PK") {
         match crate::preview::docx_to_html(&bytes) {
             Ok(html) if !html.trim().is_empty() => html,
             _ => html_from_plain(&body),

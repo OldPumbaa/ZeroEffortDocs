@@ -382,23 +382,6 @@ pub fn render_body(
     fields: &[Field],
     values: &serde_json::Map<String, serde_json::Value>,
 ) -> String {
-    let mut out = layout.to_string();
-    for field in fields {
-        let needle = format!("{{{{{}}}}}", field.key);
-        let replacement = match values.get(&field.key) {
-            None | Some(serde_json::Value::Null) => String::new(),
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Number(n)) => n.to_string(),
-            Some(serde_json::Value::Bool(b)) => {
-                if *b {
-                    "да".into()
-                } else {
-                    "нет".into()
-                }
-            }
-            Some(other) => other.to_string(),
-        };
-        out = out.replace(&needle, &replacement);
-    }
-    out
+    let html = crate::layout::to_html(layout);
+    crate::layout::fill_placeholders(&html, fields, values)
 }

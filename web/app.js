@@ -381,6 +381,8 @@ async function pageTemplateEditor(view, id, query) {
     })),
     file: null,
   };
+  const layout = parseLayout(data.body);
+  let ed = null;
 
   const draw = () => {
     view.innerHTML = `
@@ -392,20 +394,15 @@ async function pageTemplateEditor(view, id, query) {
           <label class="drop" id="drop">
             <input type="file" id="file" accept=".docx,.txt,.md">
             <strong>Файл Word или текст</strong>
-            <p class="muted" id="file-label">${st.file ? esc(st.file.name) : data.source ? esc(data.source.name) : "Перетащите .docx. В Word заранее можно написать {{fio}}, {{date}}, {{num}} — поля подхватятся сами."}</p>
+            <p class="muted" id="file-label">${st.file ? esc(st.file.name) : data.source ? esc(data.source.name) : "Перетащите .docx. Текст станет блоками, {{поля}} подхватятся. Потом подвигайте и поправьте шрифты."}</p>
           </label>
           ${data.source ? `<p class="muted"><a href="/api/templates/${esc(data.id)}/source">скачать исходный файл</a></p>` : ""}
-          <div>
-            <div class="spread" style="margin-bottom:8px">
-              <span class="muted">Лист. Выделите фрагмент и нажмите «Поле», либо импортируйте .docx с {{переменными}}.</span>
-              <button type="button" class="ghost compact" id="mark-field">Поле</button>
-            </div>
-            <div class="paper-wrap" id="paper" contenteditable="true"></div>
-          </div>
+          ${toolbarHtml()}
+          <div class="zed-page" id="zed-page">${layout.blocks.map((b) => renderBlock(b, st.fields)).join("")}</div>
         </div>
         <div class="grid">
           <h2>Форма</h2>
-          <p class="muted">Справа то, что будут заполнять вместо поиска по договору.</p>
+          <p class="muted">Поля, которые заполняют вместо поиска по договору.</p>
           <div class="list" id="field-list"></div>
           <div class="row">
             <button type="button" class="btn" id="save-tmpl">Сохранить шаблон</button>
@@ -414,9 +411,21 @@ async function pageTemplateEditor(view, id, query) {
           </div>
         </div>
       </div>`;
-    hydratePaper(document.getElementById("paper"), data.body, st.fields);
     paintFields();
-    bindEditor();
+    ed = bindBlockEditor(document.getElementById("zed-page"), layout, {
+      fields: () => st.fields,
+      markField: (edit, picked) => {
+        readFields();
+        const label = picked || window.prompt("Подпись поля", "ФИО");
+        if (!label) return;
+        const key = uniqueKey(label, st.fields);
+        const field = { key, label, type: "text", required: true, fill_mode: "manual", options: [] };
+        st.fields.push(field);
+        ed.insertChip(edit, field);
+        paintFields();
+      },
+    });
+    bindRest();
   };
 
   const paintFields = () => {
@@ -439,8 +448,9 @@ async function pageTemplateEditor(view, id, query) {
       el.addEventListener("input", () => {
         if (el.dataset.k === "label") {
           const i = Number(el.closest(".field-card").dataset.i);
-          const chip = document.querySelector(`.chip[data-key="${st.fields[i].key}"]`);
-          if (chip) chip.textContent = el.value;
+          document.querySelectorAll(`.chip[data-key="${st.fields[i].key}"]`).forEach((chip) => {
+            chip.textContent = el.value;
+          });
         }
       });
     });
@@ -471,39 +481,11 @@ async function pageTemplateEditor(view, id, query) {
     });
   };
 
-  const bindEditor = () => {
-    document.getElementById("mark-field").addEventListener("click", () => {
-      const sel = window.getSelection();
-      if (!sel || !sel.rangeCount || sel.isCollapsed) {
-        toast("Выделите фрагмент на листе", true);
-        return;
-      }
-      const paper = document.getElementById("paper");
-      if (!paper.contains(sel.anchorNode)) {
-        toast("Выделение должно быть на листе", true);
-        return;
-      }
-      const text = sel.toString().trim();
-      if (!text) return;
-      const key = uniqueKey(text, st.fields);
-      st.fields.push({
-        key, label: text, type: "text", required: true, fill_mode: "manual", options: [],
-      });
-      const chip = document.createElement("span");
-      chip.className = "chip";
-      chip.dataset.key = key;
-      chip.contentEditable = "false";
-      chip.textContent = text;
-      const range = sel.getRangeAt(0);
-      range.deleteContents();
-      range.insertNode(chip);
-      sel.removeAllRanges();
-      paintFields();
-    });
+  const bindRest = () => {
     document.getElementById("save-tmpl").addEventListener("click", async () => {
       readFields();
       st.name = document.getElementById("tmpl-name").value;
-      const body = serializePaper(document.getElementById("paper"));
+      const body = JSON.stringify(ed.harvest());
       try {
         const payload = {
           name: st.name,
@@ -583,7 +565,8 @@ async function pageTemplateEditor(view, id, query) {
               options: [],
             });
           }
-          hydratePaper(document.getElementById("paper"), data.body, st.fields);
+          const imported = parseLayout(preview.text || "");
+          ed.setBlocks(imported.blocks);
           paintFields();
           if ((preview.fields || []).length) {
             toast(`Текст из файла, полей: ${preview.fields.length}`);

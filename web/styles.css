@@ -308,6 +308,53 @@ textarea { min-height: 110px; resize: vertical; }
   background: #fff;
   box-shadow: var(--shadow);
 }
+.zed-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.zed-toolbar select { width: auto; min-width: 140px; }
+.zed-tb-gap { flex: 1; min-width: 8px; }
+.zed-page {
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  min-height: 640px;
+  padding: 28px 32px 48px;
+}
+.zed-block {
+  position: relative;
+  margin: 0 0 6px;
+  padding-top: 4px;
+}
+.zed-block:hover .zed-block-bar { opacity: 1; }
+.zed-block-bar {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  opacity: 0.35;
+  margin-bottom: 2px;
+}
+.zed-edit {
+  min-height: 1.4em;
+  outline: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.zed-edit:focus { outline: 1px dashed var(--line); }
+.zed-header-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
 .paper-wrap:focus { outline: 2px solid var(--forest-soft); }
 .chip {
   display: inline-block;

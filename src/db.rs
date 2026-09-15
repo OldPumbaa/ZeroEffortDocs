@@ -117,7 +117,7 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), AppError> {
             .await?;
     }
 
-    for id in ["employees", "archive"] {
+    for id in ["employees", "archive", "libreoffice"] {
         sqlx::query("INSERT OR IGNORE INTO modules (id, enabled) VALUES (?, 0)")
             .bind(id)
             .execute(pool)
