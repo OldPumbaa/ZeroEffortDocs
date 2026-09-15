@@ -388,7 +388,7 @@ async function pageTemplatePreview(view, id) {
   }).join("");
   view.innerHTML = `
     <div class="sheet-grid">
-      <div class="zed-preview-sheet">${inner || "<p class='muted'>Пустой шаблон</p>"}</div>
+      <div class="zed-preview-sheet" style="--pages:${Number(layout.pages || 1)}">${inner || "<p class='muted'>Пустой шаблон</p>"}</div>
       <div class="card">
         <p class="muted">Это предпросмотр. Редактор — отдельный экран: блоки, поля, шрифты.</p>
         <p class="muted">${t.fields.length} полей · ${t.document_count} док.</p>
@@ -442,7 +442,7 @@ async function pageTemplateEditor(view, id, query) {
           ${data.source ? `<p class="muted"><a href="/api/templates/${esc(data.id)}/source">скачать исходный файл</a></p>` : ""}
           ${toolbarHtml()}
           <div class="zed-scroll">
-            <div class="zed-page" id="zed-page">${layout.blocks.map((b) => renderBlock(b, st.fields)).join("")}</div>
+            <div class="zed-page" id="zed-page" style="--pages:${Number(layout.pages || 1)}">${layout.blocks.map((b) => renderBlock(b, st.fields)).join("")}</div>
           </div>
         </div>
         <div class="zed-workspace-side">
@@ -569,6 +569,14 @@ async function pageTemplateEditor(view, id, query) {
     };
     document.getElementById("save-tmpl").addEventListener("click", save);
     document.getElementById("save-tmpl-top")?.addEventListener("click", save);
+    const pagesSel = document.getElementById("zed-pages");
+    if (pagesSel) {
+      pagesSel.value = String(layout.pages || 1);
+      pagesSel.addEventListener("change", () => {
+        const sheet = document.getElementById("zed-page");
+        if (sheet) sheet.style.setProperty("--pages", pagesSel.value);
+      });
+    }
     document.getElementById("issue")?.addEventListener("click", () => {
       location.hash = `#/documents/new?template=${id}`;
     });

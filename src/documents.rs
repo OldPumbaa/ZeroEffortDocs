@@ -374,7 +374,20 @@ pub async fn preview_html(
     } else {
         html_from_plain(&body)
     };
-    Ok(crate::preview::wrap_preview_page(&title, &inner))
+    let pages = {
+        let tmpl_body: Option<String> = sqlx::query_scalar(
+            "SELECT t.body FROM documents d JOIN templates t ON t.id = d.template_id WHERE d.id = ?",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+        tmpl_body
+            .as_deref()
+            .map(crate::layout::page_count)
+            .unwrap_or(1)
+    };
+    Ok(crate::preview::wrap_print_page(&title, &inner, pages))
 }
 
 pub async fn export_original(
@@ -400,17 +413,19 @@ pub async fn export_layout_docx(
 
 pub async fn export_pdf(
     pool: &SqlitePool,
-    data_dir: &Path,
+    _data_dir: &Path,
     id: &str,
 ) -> Result<(String, Vec<u8>), AppError> {
-    let title: String = sqlx::query_scalar("SELECT title FROM documents WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or(AppError::NotFound)?;
-    let html = preview_html(pool, data_dir, id).await?;
+    let doc = get(pool, id).await?;
+    let inner = crate::layout::fill_placeholders(
+        &crate::layout::to_html(&doc.template.body),
+        &doc.template.fields,
+        &doc.values,
+    );
+    let pages = crate::layout::page_count(&doc.template.body);
+    let html = crate::preview::wrap_print_page(&doc.title, &inner, pages);
     let bytes = crate::export::html_to_pdf(&html)?;
-    Ok((format!("{}.pdf", sanitize_filename(&title)), bytes))
+    Ok((format!("{}.pdf", sanitize_filename(&doc.title)), bytes))
 }
 
 pub async fn send_to_printer(pool: &SqlitePool, data_dir: &Path, id: &str) -> Result<(), AppError> {

@@ -13,7 +13,21 @@ pub fn docx_to_html(bytes: &[u8]) -> Result<String, AppError> {
 }
 
 pub fn wrap_preview_page(title: &str, inner: &str) -> String {
+    wrap_sheet(title, inner, 1, false)
+}
+
+pub fn wrap_print_page(title: &str, inner: &str, pages: u32) -> String {
+    wrap_sheet(title, inner, pages.clamp(1, 5), true)
+}
+
+fn wrap_sheet(title: &str, inner: &str, pages: u32, for_pdf: bool) -> String {
     let title_esc = esc(title);
+    let height = 297 * pages;
+    let chrome = if for_pdf {
+        "html, body { margin: 0; background: #fff; color: #000; }"
+    } else {
+        "html, body { margin: 0; background: #fff; color: #241c15; }"
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="ru">
@@ -21,33 +35,24 @@ pub fn wrap_preview_page(title: &str, inner: &str) -> String {
 <meta charset="utf-8">
 <title>{title_esc}</title>
 <style>
-  html, body {{ margin: 0; background: #efe7d6; color: #241c15; }}
+  {chrome}
+  @page {{ size: A4; margin: 0; }}
   .page {{
     width: 210mm;
-    min-height: 297mm;
-    margin: 16px auto 32px;
+    height: {height}mm;
+    overflow: hidden;
+    margin: 0 auto;
     background: #fff;
-    padding: 20mm 18mm;
+    padding: 18mm 16mm;
     box-sizing: border-box;
-    box-shadow: 0 14px 40px rgba(36, 28, 21, 0.08);
     font-family: "Times New Roman", Times, "PT Serif", serif;
     font-size: 14pt;
-    line-height: 1.35;
+    line-height: 1.25;
   }}
-  p {{ margin: 0 0 0.35em; min-height: 1em; }}
-  table {{ border-collapse: collapse; width: 100%; margin: 0.4em 0; }}
-  td, th {{ border: 1px solid #444; padding: 4px 8px; vertical-align: top; }}
-  @media print {{
-    @page {{ margin: 16mm; }}
-    html, body {{ background: #fff; }}
-    .page {{
-      box-shadow: none;
-      margin: 0;
-      width: auto;
-      min-height: 0;
-      padding: 0;
-    }}
-  }}
+  p {{ margin: 0 0 0.25em; min-height: 1em; }}
+  table {{ border-collapse: collapse; width: 100%; margin: 0.2em 0; }}
+  td, th {{ border: none; padding: 0 6px 0 0; vertical-align: top; }}
+  .zed-header td {{ vertical-align: top; }}
 </style>
 </head>
 <body><div class="page">{inner}</div></body>

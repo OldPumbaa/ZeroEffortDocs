@@ -21,12 +21,13 @@ function parseLayout(body) {
       const j = JSON.parse(raw);
       if (j && Array.isArray(j.blocks)) {
         j.blocks = j.blocks.map(normalizeBlock);
+        j.pages = Math.min(5, Math.max(1, Number(j.pages || 1)));
         return j;
       }
     } catch { /* plain */ }
   }
   const lines = raw ? raw.split(/\n/) : [""];
-  return { v: 1, blocks: lines.map((line) => normalizeBlock({ html: line })) };
+  return { v: 1, pages: 1, blocks: lines.map((line) => normalizeBlock({ html: line })) };
 }
 
 function normalizeBlock(b) {
@@ -96,7 +97,8 @@ function harvestLayout(page) {
       html: cells.slice(0, cols),
     });
   });
-  return { v: 1, blocks };
+  const pages = Math.min(5, Math.max(1, Number(document.getElementById("zed-pages")?.value || 1)));
+  return { v: 1, pages, blocks };
 }
 
 function blockStyle(b) {
@@ -144,6 +146,11 @@ function toolbarHtml() {
       <option value="2">двойной Tab</option>
     </select>
     <span class="zed-tb-gap"></span>
+    <select id="zed-pages" title="сколько листов A4">
+      <option value="1">1 лист</option>
+      <option value="2">2 листа</option>
+      <option value="3">3 листа</option>
+    </select>
     <button type="button" class="ghost compact" id="zed-add-p">+ блок</button>
     <button type="button" class="btn compact" id="zed-field">Поле</button>
   </div>`;

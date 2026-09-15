@@ -348,11 +348,16 @@ body.editor-mode #view {
   background: #fff;
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
-  padding: 28px 36px 48px;
-  min-height: 480px;
+  width: 210mm;
+  max-width: 100%;
+  min-height: calc(297mm * var(--pages, 1));
+  height: calc(297mm * var(--pages, 1));
+  overflow: hidden;
+  padding: 18mm 16mm;
+  box-sizing: border-box;
   font-family: "Times New Roman", Times, serif;
   font-size: 14pt;
-  line-height: 1.35;
+  line-height: 1.25;
 }
 .zed-toolbar {
   display: flex;
@@ -371,8 +376,11 @@ body.editor-mode #view {
   background: #fff;
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
-  min-height: 640px;
-  padding: 28px 32px 48px;
+  width: 210mm;
+  max-width: 100%;
+  min-height: calc(297mm * var(--pages, 1));
+  padding: 18mm 16mm;
+  box-sizing: border-box;
 }
 .zed-block {
   position: relative;
@@ -402,7 +410,8 @@ body.editor-mode #view {
   padding-bottom: 10px;
   margin-bottom: 10px;
 }
-.zed-cols { display: grid; gap: 12px; }
+.zed-cols { display: grid; gap: 12px; align-items: start; }
+.zed-cols .zed-edit { align-self: start; }
 .zed-cols-1 { grid-template-columns: 1fr; }
 .zed-cols-2 { grid-template-columns: 1fr 1fr; }
 .zed-cols-3 { grid-template-columns: 1fr 1fr 1fr; }

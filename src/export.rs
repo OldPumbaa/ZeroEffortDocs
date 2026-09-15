@@ -54,13 +54,13 @@ fn block_to_xml(
         html_fragment_to_paragraphs(&cells[0], size, font, align, indent)
     } else {
         let mut xml = String::from(
-            r#"<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="none"/><w:left w:val="none"/><w:bottom w:val="none"/><w:right w:val="none"/><w:insideH w:val="none"/><w:insideV w:val="none"/></w:tblBorders></w:tblPr><w:tr>"#,
+            r#"<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="none" w:sz="0"/><w:left w:val="none" w:sz="0"/><w:bottom w:val="none" w:sz="0"/><w:right w:val="none" w:sz="0"/><w:insideH w:val="none" w:sz="0"/><w:insideV w:val="none" w:sz="0"/></w:tblBorders><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tr>"#,
         );
         let w = 5000 / n as i32;
         for (i, cell) in cells.iter().enumerate() {
             let cell_align = if n == 2 && i + 1 == n { "right" } else { align };
             xml.push_str(&format!(
-                r#"<w:tc><w:tcPr><w:tcW w:w="{w}" w:type="pct"/></w:tcPr>{p}</w:tc>"#,
+                r#"<w:tc><w:tcPr><w:tcW w:w="{w}" w:type="pct"/><w:vAlign w:val="top"/></w:tcPr>{p}</w:tc>"#,
                 p = html_fragment_to_paragraphs(cell, size, font, cell_align, 0)
             ));
         }
@@ -89,7 +89,9 @@ fn html_fragment_to_paragraphs(
         String::new()
     };
     let runs = html_to_runs(html, size, font);
-    format!(r#"<w:p><w:pPr><w:jc w:val="{jc}"/>{indent_xml}</w:pPr>{runs}</w:p>"#)
+    format!(
+        r#"<w:p><w:pPr><w:jc w:val="{jc}"/>{indent_xml}<w:spacing w:before="0" w:after="80" w:line="276" w:lineRule="auto"/></w:pPr>{runs}</w:p>"#
+    )
 }
 
 #[derive(Clone)]

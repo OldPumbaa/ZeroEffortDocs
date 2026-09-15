@@ -5,6 +5,8 @@ use crate::model::Field;
 #[derive(Debug, Deserialize)]
 pub struct Layout {
     pub v: u32,
+    #[serde(default)]
+    pub pages: Option<u32>,
     pub blocks: Vec<Block>,
 }
 
@@ -33,6 +35,10 @@ pub fn is_layout_json(body: &str) -> bool {
 pub fn is_html(body: &str) -> bool {
     let t = body.trim_start();
     t.starts_with('<')
+}
+
+pub fn page_count(body: &str) -> u32 {
+    parse(body).and_then(|l| l.pages).unwrap_or(1).clamp(1, 5)
 }
 
 pub fn parse(body: &str) -> Option<Layout> {
