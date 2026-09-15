@@ -2,6 +2,7 @@ pub mod api;
 pub mod db;
 pub mod documents;
 pub mod error;
+pub mod export;
 pub mod extract;
 pub mod files;
 pub mod layout;

@@ -3,23 +3,26 @@ use serde::Deserialize;
 use crate::model::Field;
 
 #[derive(Debug, Deserialize)]
-struct Layout {
-    v: u32,
-    blocks: Vec<Block>,
+pub struct Layout {
+    pub v: u32,
+    pub blocks: Vec<Block>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Block {
+pub struct Block {
     #[serde(rename = "type")]
-    kind: String,
-    align: Option<String>,
-    font: Option<String>,
-    size: Option<u32>,
-    html: Option<String>,
-    left: Option<String>,
-    right: Option<String>,
+    pub kind: String,
+    pub align: Option<String>,
+    pub font: Option<String>,
+    pub size: Option<u32>,
     #[serde(default)]
-    indent: Option<u32>,
+    pub html: Option<serde_json::Value>,
+    pub left: Option<String>,
+    pub right: Option<String>,
+    #[serde(default)]
+    pub indent: Option<u32>,
+    #[serde(default)]
+    pub cols: Option<u32>,
 }
 
 pub fn is_layout_json(body: &str) -> bool {
@@ -32,16 +35,65 @@ pub fn is_html(body: &str) -> bool {
     t.starts_with('<')
 }
 
+pub fn parse(body: &str) -> Option<Layout> {
+    let trimmed = body.trim();
+    let layout: Layout = serde_json::from_str(trimmed).ok()?;
+    if layout.v >= 1 {
+        Some(layout)
+    } else {
+        None
+    }
+}
+
+pub fn block_cells(b: &Block) -> Vec<String> {
+    if let Some(val) = &b.html {
+        if let Some(arr) = val.as_array() {
+            let mut cells: Vec<String> = arr
+                .iter()
+                .map(|x| x.as_str().unwrap_or("").to_string())
+                .collect();
+            let n = col_count(b);
+            while cells.len() < n {
+                cells.push(String::new());
+            }
+            cells.truncate(n);
+            return cells;
+        }
+        if let Some(s) = val.as_str() {
+            if b.kind == "header" {
+                return vec![s.to_string(), b.right.clone().unwrap_or_default()];
+            }
+            return vec![s.to_string()];
+        }
+    }
+    if b.kind == "header" {
+        return vec![
+            b.left.clone().unwrap_or_default(),
+            b.right.clone().unwrap_or_default(),
+        ];
+    }
+    vec![String::new()]
+}
+
+pub fn col_count(b: &Block) -> usize {
+    if let Some(c) = b.cols {
+        return (c.clamp(1, 4)) as usize;
+    }
+    if b.kind == "header" {
+        2
+    } else {
+        1
+    }
+}
+
 /// Turns stored template body (JSON layout or plain text) into HTML with `{{key}}` still in it.
 pub fn to_html(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return String::new();
     }
-    if let Ok(layout) = serde_json::from_str::<Layout>(trimmed) {
-        if layout.v >= 1 {
-            return render_blocks(&layout.blocks);
-        }
+    if let Some(layout) = parse(trimmed) {
+        return render_blocks(&layout.blocks);
     }
     if is_html(trimmed) {
         return trimmed.to_string();
@@ -90,7 +142,9 @@ fn render_blocks(blocks: &[Block]) -> String {
             _ => "left",
         };
         let indent = b.indent.unwrap_or(0);
-        let indent_css = if indent > 0 && b.kind != "header" {
+        let cells = block_cells(b);
+        let n = cells.len().clamp(1, 4);
+        let indent_css = if indent > 0 && n == 1 {
             format!("text-indent:{}cm;", indent as f32 * 1.25)
         } else {
             String::new()
@@ -99,18 +153,30 @@ fn render_blocks(blocks: &[Block]) -> String {
             "font-family:{};font-size:{size}pt;text-align:{align};{indent_css}",
             css_font(font)
         );
-        match b.kind.as_str() {
-            "header" => {
+        if n == 1 {
+            let inner = if cells[0].is_empty() {
+                "&nbsp;"
+            } else {
+                cells[0].as_str()
+            };
+            html.push_str(&format!("<p style=\"{style}\">{inner}</p>"));
+        } else {
+            html.push_str(&format!(
+                r#"<table class="zed-header" style="{style}width:100%;border:none;"><tr>"#
+            ));
+            let width = 100 / n;
+            for (i, cell) in cells.iter().enumerate() {
+                let ta = if n == 2 && i + 1 == n {
+                    "text-align:right;"
+                } else {
+                    ""
+                };
+                let inner = if cell.is_empty() { "&nbsp;" } else { cell };
                 html.push_str(&format!(
-                    r#"<table class="zed-header" style="{style}width:100%;border:none;"><tr><td style="border:none;width:50%;vertical-align:top;">{left}</td><td style="border:none;width:50%;vertical-align:top;text-align:right;">{right}</td></tr></table>"#,
-                    left = b.left.as_deref().unwrap_or(""),
-                    right = b.right.as_deref().unwrap_or(""),
+                    r#"<td style="border:none;width:{width}%;vertical-align:top;{ta}">{inner}</td>"#
                 ));
             }
-            _ => {
-                let inner = b.html.as_deref().unwrap_or("&nbsp;");
-                html.push_str(&format!("<p style=\"{style}\">{inner}</p>"));
-            }
+            html.push_str("</tr></table>");
         }
     }
     html.push_str("</div>");
@@ -121,7 +187,7 @@ fn css_font(name: &str) -> String {
     format!("'{}', Times, serif", name.replace('\'', ""))
 }
 
-fn html_escape(s: &str) -> String {
+pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -137,15 +203,16 @@ mod tests {
           "v":1,
           "blocks":[
             {"type":"header","left":"ООО Ромашка","right":"Исх. {{num}}","size":12},
-            {"type":"paragraph","align":"center","html":"<b>ПРИКАЗ</b>","size":18,"indent":1}
+            {"type":"paragraph","align":"center","html":"<b>ПРИКАЗ</b>","size":18,"indent":1},
+            {"type":"block","cols":4,"html":["А","Б","В","Г"]}
           ]
         }"#;
         let html = to_html(raw);
-        assert!(html.contains("zed-header"), "{html}");
         assert!(html.contains("ООО Ромашка"), "{html}");
         assert!(html.contains("{{num}}"), "{html}");
         assert!(html.contains("text-align:center"), "{html}");
         assert!(html.contains("ПРИКАЗ"), "{html}");
         assert!(html.contains("text-indent:1.25cm"), "{html}");
+        assert!(html.contains(">Г<"), "{html}");
     }
 }

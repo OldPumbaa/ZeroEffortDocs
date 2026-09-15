@@ -377,6 +377,42 @@ pub async fn preview_html(
     Ok(crate::preview::wrap_preview_page(&title, &inner))
 }
 
+pub async fn export_original(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+) -> Result<(String, String, Vec<u8>), AppError> {
+    source_bytes(pool, data_dir, id).await
+}
+
+pub async fn export_layout_docx(
+    pool: &SqlitePool,
+    id: &str,
+) -> Result<(String, Vec<u8>), AppError> {
+    let doc = get(pool, id).await?;
+    let bytes =
+        crate::export::layout_to_docx(&doc.template.body, &doc.template.fields, &doc.values)?;
+    Ok((
+        format!("{}-verstka.docx", sanitize_filename(&doc.title)),
+        bytes,
+    ))
+}
+
+pub async fn export_pdf(
+    pool: &SqlitePool,
+    data_dir: &Path,
+    id: &str,
+) -> Result<(String, Vec<u8>), AppError> {
+    let title: String = sqlx::query_scalar("SELECT title FROM documents WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let html = preview_html(pool, data_dir, id).await?;
+    let bytes = crate::export::html_to_pdf(&html)?;
+    Ok((format!("{}.pdf", sanitize_filename(&title)), bytes))
+}
+
 pub async fn send_to_printer(pool: &SqlitePool, data_dir: &Path, id: &str) -> Result<(), AppError> {
     let path = ensure_docx_on_disk(pool, data_dir, id).await?;
     crate::printjob::print_docx(&path)

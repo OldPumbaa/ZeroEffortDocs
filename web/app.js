@@ -373,13 +373,18 @@ async function pageTemplatePreview(view, id) {
     `<a class="btn ghost" href="#/documents/new?template=${t.id}">Выпустить</a><a class="btn" href="#/templates/${t.id}/edit">Редактировать</a>`,
   );
   const layout = parseLayout(t.body);
-  const inner = layout.blocks.map((b) => {
+  const inner = layout.blocks.map((raw) => {
+    const b = normalizeBlock(raw);
     const indent = Number(b.indent || 0);
-    const style = `font-family:'${b.font || "Times New Roman"}',Times,serif;font-size:${b.size || 14}pt;text-align:${b.align || "left"};${indent ? `text-indent:${indent * 1.25}cm;` : ""}`;
-    if (b.type === "header") {
-      return `<table class="zed-header" style="${style}width:100%;border:none"><tr><td style="border:none;width:50%;vertical-align:top">${hydrateHtml(b.left || "", t.fields)}</td><td style="border:none;width:50%;vertical-align:top;text-align:right">${hydrateHtml(b.right || "", t.fields)}</td></tr></table>`;
+    const style = `font-family:'${b.font}',Times,serif;font-size:${b.size}pt;text-align:${b.align};${indent && b.cols === 1 ? `text-indent:${indent * 1.25}cm;` : ""}`;
+    if (b.cols === 1) {
+      return `<p style="${style}">${hydrateHtml(b.html[0] || "", t.fields) || "&nbsp;"}</p>`;
     }
-    return `<p style="${style}">${hydrateHtml(b.html || "", t.fields) || "&nbsp;"}</p>`;
+    const tds = b.html.map((cell, i) => {
+      const ta = b.cols === 2 && i === 1 ? "text-align:right;" : "";
+      return `<td style="border:none;width:${Math.floor(100 / b.cols)}%;vertical-align:top;${ta}">${hydrateHtml(cell || "", t.fields) || "&nbsp;"}</td>`;
+    }).join("");
+    return `<table class="zed-header" style="${style}width:100%;border:none"><tr>${tds}</tr></table>`;
   }).join("");
   view.innerHTML = `
     <div class="sheet-grid">
@@ -711,7 +716,7 @@ async function pageDocumentView(view, id) {
   setNav(
     "documents",
     doc.title,
-    `<a class="btn" href="/api/documents/${doc.id}/source">Скачать</a><button type="button" class="ghost" id="print-doc">Распечатать</button>`,
+    `<a class="btn ghost" href="/api/documents/${doc.id}/export/original">Оригинал</a><a class="btn ghost" href="/api/documents/${doc.id}/export/pdf">PDF</a><a class="btn" href="/api/documents/${doc.id}/export/docx">DOCX из вёрстки</a><button type="button" class="ghost" id="print-doc">Распечатать</button>`,
   );
   view.innerHTML = `
     <div class="sheet-grid">
@@ -724,10 +729,12 @@ async function pageDocumentView(view, id) {
           ${doc.template.fields.map((f) => `<p><span class="muted">${esc(f.label)}</span><br>${esc(fmtValue(doc.values[f.key]))}</p>`).join("")}
         </dl>
         <div class="row" style="margin-top:12px">
-          <a class="btn" href="/api/documents/${doc.id}/source">Скачать</a>
+          <a class="btn ghost" href="/api/documents/${doc.id}/export/original">Оригинал</a>
+          <a class="btn ghost" href="/api/documents/${doc.id}/export/pdf">PDF</a>
+          <a class="btn" href="/api/documents/${doc.id}/export/docx">DOCX из вёрстки</a>
           <button type="button" class="ghost" id="print-doc-2">Распечатать</button>
         </div>
-        <p class="muted" style="margin-top:10px">Печать идёт в Word, если он установлен — без шапки сайта и адреса. Иначе печатается предпросмотр; в окне печати снимите «Колонтитулы».</p>
+        <p class="muted" style="margin-top:10px">Предпросмотр — наша вёрстка. Оригинал — импортированный Word (уже с полями). DOCX из вёрстки — обратная сборка из HTML, чтобы сравнить точность. PDF — из предпросмотра через LibreOffice, если он установлен.</p>
         <button type="button" class="danger ghost" id="del-doc" style="margin-top:12px">удалить</button>
       </div>
     </div>`;

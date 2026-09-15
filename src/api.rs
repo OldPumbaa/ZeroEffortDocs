@@ -49,7 +49,10 @@ pub fn router() -> Router<AppState> {
                 get(get_source).put(put_source).delete(delete_source),
             )
             .route("/documents/{id}/preview", get(preview_document))
-            .route("/documents/{id}/print", post(print_document)),
+            .route("/documents/{id}/print", post(print_document))
+            .route("/documents/{id}/export/original", get(export_original))
+            .route("/documents/{id}/export/docx", get(export_layout_docx))
+            .route("/documents/{id}/export/pdf", get(export_pdf)),
     )
 }
 
@@ -328,6 +331,52 @@ async fn delete_document(
 ) -> Result<StatusCode, AppError> {
     documents::delete(&state.pool, &state.data_dir, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn export_original(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let (name, mime, bytes) = documents::export_original(&state.pool, &state.data_dir, &id).await?;
+    Ok(file_download(&name, &mime, bytes))
+}
+
+async fn export_layout_docx(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let (name, bytes) = documents::export_layout_docx(&state.pool, &id).await?;
+    Ok(file_download(
+        &name,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        bytes,
+    ))
+}
+
+async fn export_pdf(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let (name, bytes) = documents::export_pdf(&state.pool, &state.data_dir, &id).await?;
+    Ok(file_download(&name, "application/pdf", bytes))
+}
+
+fn file_download(name: &str, mime: &str, bytes: Vec<u8>) -> impl IntoResponse {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(mime)
+                    .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+            ),
+            (header::CONTENT_DISPOSITION, content_disposition(name)),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            ),
+        ],
+        Body::from(bytes),
+    )
 }
 
 async fn preview_document(

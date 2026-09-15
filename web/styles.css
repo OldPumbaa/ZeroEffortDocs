@@ -402,6 +402,12 @@ body.editor-mode #view {
   padding-bottom: 10px;
   margin-bottom: 10px;
 }
+.zed-cols { display: grid; gap: 12px; }
+.zed-cols-1 { grid-template-columns: 1fr; }
+.zed-cols-2 { grid-template-columns: 1fr 1fr; }
+.zed-cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+.zed-cols-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+.zed-block-bar button.on { background: var(--forest-soft); color: var(--forest); }
 .paper-wrap:focus { outline: 2px solid var(--forest-soft); }
 .chip {
   display: inline-block;

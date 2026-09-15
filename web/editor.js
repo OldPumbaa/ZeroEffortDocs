@@ -19,21 +19,38 @@ function parseLayout(body) {
   if (raw.startsWith("{")) {
     try {
       const j = JSON.parse(raw);
-      if (j && Array.isArray(j.blocks)) return j;
+      if (j && Array.isArray(j.blocks)) {
+        j.blocks = j.blocks.map(normalizeBlock);
+        return j;
+      }
     } catch { /* plain */ }
   }
   const lines = raw ? raw.split(/\n/) : [""];
-  return {
-    v: 1,
-    blocks: lines.map((line) => ({
-      id: uid(),
-      type: "paragraph",
-      align: "left",
-      font: "Times New Roman",
-      size: 14,
-      html: line,
-    })),
+  return { v: 1, blocks: lines.map((line) => normalizeBlock({ html: line })) };
+}
+
+function normalizeBlock(b) {
+  const base = {
+    id: (b && b.id) || uid(),
+    type: "block",
+    align: (b && b.align) || "left",
+    font: (b && b.font) || "Times New Roman",
+    size: (b && b.size) || 14,
+    indent: Number((b && b.indent) || 0),
   };
+  if (b && b.type === "header") {
+    return { ...base, cols: 2, html: [b.left || "", b.right || ""] };
+  }
+  let html = [];
+  if (b && Array.isArray(b.html)) html = b.html.slice();
+  else if (b && typeof b.html === "string") html = [b.html];
+  else if (b && (b.left != null || b.right != null)) html = [b.left || "", b.right || ""];
+  else html = [""];
+  let cols = Number((b && b.cols) || html.length || 1);
+  cols = Math.min(4, Math.max(1, cols));
+  while (html.length < cols) html.push("");
+  html = html.slice(0, cols);
+  return { ...base, cols, html };
 }
 
 function hydrateHtml(html, fields) {
@@ -63,32 +80,21 @@ function dehydrateEl(el) {
 function harvestLayout(page) {
   const blocks = [];
   page.querySelectorAll(".zed-block").forEach((node) => {
-    const type = node.dataset.type;
     const font = node.dataset.font || "Times New Roman";
     const size = Number(node.dataset.size || 14);
-    if (type === "header") {
-      const left = node.querySelector('[data-side="left"]');
-      const right = node.querySelector('[data-side="right"]');
-      blocks.push({
-        id: node.dataset.id,
-        type: "header",
-        font,
-        size,
-        left: dehydrateEl(left),
-        right: dehydrateEl(right),
-      });
-    } else {
-      const edit = node.querySelector(".zed-edit");
-      blocks.push({
-        id: node.dataset.id,
-        type: "paragraph",
-        align: node.dataset.align || "left",
-        font,
-        size,
-        indent: Number(node.dataset.indent || 0),
-        html: dehydrateEl(edit),
-      });
-    }
+    const cells = [...node.querySelectorAll(".zed-edit")].map((el) => dehydrateEl(el));
+    const cols = Math.min(4, Math.max(1, Number(node.dataset.cols || cells.length || 1)));
+    while (cells.length < cols) cells.push("");
+    blocks.push({
+      id: node.dataset.id,
+      type: "block",
+      cols,
+      align: node.dataset.align || "left",
+      font,
+      size,
+      indent: Number(node.dataset.indent || 0),
+      html: cells.slice(0, cols),
+    });
   });
   return { v: 1, blocks };
 }
@@ -103,29 +109,22 @@ function blockStyle(b) {
 }
 
 function renderBlock(b, fields) {
-  const id = b.id || uid();
-  const font = b.font || "Times New Roman";
-  const size = b.size || 14;
-  const align = b.align || "left";
+  const nb = normalizeBlock(b);
   const bar = `<div class="zed-block-bar">
     <button type="button" class="ghost compact" data-up title="выше">↑</button>
     <button type="button" class="ghost compact" data-down title="ниже">↓</button>
-    <span class="muted">${b.type === "header" ? "шапка" : "абзац"}</span>
-    <button type="button" class="ghost compact" data-kind>${b.type === "header" ? "в абзац" : "в шапку"}</button>
+    <span class="muted">блок</span>
+    ${[1, 2, 3, 4].map((n) => `<button type="button" class="ghost compact ${nb.cols === n ? "on" : ""}" data-cols="${n}" title="${n} колонк${n === 1 ? "а" : "и"}">${n}</button>`).join("")}
     <button type="button" class="ghost compact" data-rm>убрать</button>
   </div>`;
-  if (b.type === "header") {
-    return `<div class="zed-block" data-id="${esc(id)}" data-type="header" data-font="${esc(font)}" data-size="${size}">
-      ${bar}
-      <div class="zed-header-row" style="${blockStyle({ font, size, align: "left" })}">
-        <div class="zed-edit" data-side="left" contenteditable="true">${hydrateHtml(b.left || "", fields)}</div>
-        <div class="zed-edit" data-side="right" contenteditable="true" style="text-align:right">${hydrateHtml(b.right || "", fields)}</div>
-      </div>
-    </div>`;
-  }
-  return `<div class="zed-block" data-id="${esc(id)}" data-type="paragraph" data-align="${esc(align)}" data-font="${esc(font)}" data-size="${size}" data-indent="${Number(b.indent || 0)}">
+  const cells = nb.html.map((cell, i) => {
+    const ta = nb.cols === 2 && i === 1 ? "right" : (nb.align || "left");
+    const style = blockStyle({ ...nb, align: ta, indent: nb.cols === 1 ? nb.indent : 0 });
+    return `<div class="zed-edit" data-col="${i}" contenteditable="true" style="${style}">${hydrateHtml(cell || "", fields)}</div>`;
+  }).join("");
+  return `<div class="zed-block" data-id="${esc(nb.id)}" data-type="block" data-cols="${nb.cols}" data-align="${esc(nb.align)}" data-font="${esc(nb.font)}" data-size="${nb.size}" data-indent="${nb.indent}">
     ${bar}
-    <div class="zed-edit" contenteditable="true" style="${blockStyle(b)}">${hydrateHtml(b.html || "", fields)}</div>
+    <div class="zed-cols zed-cols-${nb.cols}">${cells}</div>
   </div>`;
 }
 
@@ -145,8 +144,7 @@ function toolbarHtml() {
       <option value="2">двойной Tab</option>
     </select>
     <span class="zed-tb-gap"></span>
-    <button type="button" class="ghost compact" id="zed-add-p">+ абзац</button>
-    <button type="button" class="ghost compact" id="zed-add-h">+ шапка</button>
+    <button type="button" class="ghost compact" id="zed-add-p">+ блок</button>
     <button type="button" class="btn compact" id="zed-field">Поле</button>
   </div>`;
 }
@@ -199,38 +197,28 @@ function bindBlockEditor(page, layout, ctx) {
       el.addEventListener("keydown", (e) => {
         if (e.key !== "Tab") return;
         const block = el.closest(".zed-block");
-        if (!block || block.dataset.type !== "paragraph") return;
+        if (!block || Number(block.dataset.cols || 1) !== 1) return;
         e.preventDefault();
         let n = Number(block.dataset.indent || 0);
         n = e.shiftKey ? Math.max(0, n - 1) : Math.min(4, n + 1);
         setIndent(block, n);
       });
     });
-    page.querySelectorAll("[data-kind]").forEach((btn) => {
+    page.querySelectorAll("[data-cols]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const node = btn.closest(".zed-block");
         const one = harvestLayout(node.parentNode).blocks.find((b) => b.id === node.dataset.id);
         if (!one) return;
-        const next = one.type === "header"
-          ? {
-              id: one.id,
-              type: "paragraph",
-              align: "left",
-              font: one.font,
-              size: one.size,
-              indent: 0,
-              html: [one.left, one.right].filter(Boolean).join(" "),
-            }
-          : {
-              id: one.id,
-              type: "header",
-              font: one.font,
-              size: one.size,
-              left: one.html || "",
-              right: "",
-            };
+        const cols = Number(btn.dataset.cols);
+        let html = (one.html || []).slice();
+        while (html.length < cols) html.push("");
+        if (html.length > cols) {
+          const rest = html.slice(cols).filter(Boolean).join(" ");
+          html = html.slice(0, cols);
+          if (rest) html[html.length - 1] = (html[html.length - 1] + " " + rest).trim();
+        }
         const wrap = document.createElement("div");
-        wrap.innerHTML = renderBlock(next, ctx.fields());
+        wrap.innerHTML = renderBlock({ ...one, cols, html }, ctx.fields());
         node.replaceWith(wrap.firstElementChild);
         bindBlocks();
       });
@@ -252,7 +240,7 @@ function bindBlockEditor(page, layout, ctx) {
         const node = btn.closest(".zed-block");
         node.remove();
         if (!page.querySelector(".zed-block")) {
-          layout.blocks = [{ id: uid(), type: "paragraph", align: "left", font: "Times New Roman", size: 14, html: "" }];
+          layout.blocks = [normalizeBlock({ cols: 1, html: [""] })];
           page.innerHTML = renderBlock(layout.blocks[0], ctx.fields());
           bindBlocks();
         }
@@ -278,12 +266,10 @@ function bindBlockEditor(page, layout, ctx) {
       const edit = focusedEdit();
       if (!edit) return;
       const block = edit.closest(".zed-block");
-      if (block.dataset.type === "paragraph") {
+      if (Number(block.dataset.cols || 1) === 1) {
         block.dataset.align = btn.dataset.align;
-        edit.style.textAlign = btn.dataset.align;
-      } else {
-        edit.style.textAlign = btn.dataset.align;
       }
+      edit.style.textAlign = btn.dataset.align;
     });
   });
 
@@ -305,28 +291,18 @@ function bindBlockEditor(page, layout, ctx) {
   document.getElementById("zed-indent").addEventListener("change", (e) => {
     const edit = focusedEdit();
     const block = edit?.closest(".zed-block");
-    if (!block || block.dataset.type !== "paragraph") {
-      toast("Отступ — для абзаца. Поставьте курсор в строку.", true);
+    if (!block || Number(block.dataset.cols || 1) !== 1) {
+      toast("Отступ — для блока в одну колонку.", true);
       return;
     }
     setIndent(block, Number(e.target.value));
   });
 
   document.getElementById("zed-add-p").addEventListener("click", () => {
-    const html = renderBlock({
-      id: uid(), type: "paragraph", align: "left", font: "Times New Roman", size: 14, html: "",
-    }, ctx.fields());
+    const html = renderBlock(normalizeBlock({ cols: 1, html: [""] }), ctx.fields());
     page.insertAdjacentHTML("beforeend", html);
     bindBlocks();
     page.lastElementChild.querySelector(".zed-edit").focus();
-  });
-
-  document.getElementById("zed-add-h").addEventListener("click", () => {
-    const html = renderBlock({
-      id: uid(), type: "header", font: "Times New Roman", size: 12, left: "", right: "",
-    }, ctx.fields());
-    page.insertAdjacentHTML("afterbegin", html);
-    bindBlocks();
   });
 
   document.getElementById("zed-field").addEventListener("click", () => {
