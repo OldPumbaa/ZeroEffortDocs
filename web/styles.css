@@ -308,11 +308,15 @@ textarea { min-height: 110px; resize: vertical; }
   background: #fff;
   box-shadow: var(--shadow);
 }
+body.editor-mode { overflow: hidden; }
+body.editor-mode .sidebar,
+body.editor-mode main {
+  min-height: 0;
+  overflow: hidden;
+}
 body.editor-mode main {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  overflow: hidden;
   padding-bottom: 12px;
 }
 body.editor-mode #view {
@@ -400,6 +404,9 @@ body.editor-mode #view {
   outline: none;
   padding: 2px 4px;
   border-radius: 4px;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
 }
 .zed-edit:focus { outline: 1px dashed var(--line); }
 .zed-header-row {

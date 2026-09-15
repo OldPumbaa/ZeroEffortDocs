@@ -434,11 +434,11 @@ async function pageTemplateEditor(view, id, query) {
           <label><span>Название шаблона</span>
             <input id="tmpl-name" type="text" required value="${esc(st.name)}" placeholder="Приём на работу">
           </label>
-          <label class="drop" id="drop">
+          <div class="drop" id="drop">
             <input type="file" id="file" accept=".docx,.txt,.md">
             <strong>Файл Word или текст</strong>
             <p class="muted" id="file-label">${st.file ? esc(st.file.name) : data.source ? esc(data.source.name) : "Перетащите .docx. Текст станет блоками, {{поля}} подхватятся."}</p>
-          </label>
+          </div>
           ${data.source ? `<p class="muted"><a href="/api/templates/${esc(data.id)}/source">скачать исходный файл</a></p>` : ""}
           ${toolbarHtml()}
           <div class="zed-scroll">
@@ -631,6 +631,10 @@ async function pageTemplateEditor(view, id, query) {
         }
       };
       fileInput.addEventListener("change", () => { if (fileInput.files[0]) onFile(fileInput.files[0]); });
+      drop.addEventListener("click", (e) => {
+        if (e.target === fileInput) return;
+        fileInput.click();
+      });
       drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
       drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
       drop.addEventListener("drop", (e) => {

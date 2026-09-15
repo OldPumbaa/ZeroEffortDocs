@@ -122,7 +122,7 @@ function renderBlock(b, fields) {
   const cells = nb.html.map((cell, i) => {
     const ta = nb.cols === 2 && i === 1 ? "right" : (nb.align || "left");
     const style = blockStyle({ ...nb, align: ta, indent: nb.cols === 1 ? nb.indent : 0 });
-    return `<div class="zed-edit" data-col="${i}" contenteditable="true" style="${style}">${hydrateHtml(cell || "", fields)}</div>`;
+    return `<div class="zed-edit" data-col="${i}" contenteditable="true" spellcheck="false" style="${style}">${hydrateHtml(cell || "", fields)}</div>`;
   }).join("");
   return `<div class="zed-block" data-id="${esc(nb.id)}" data-type="block" data-cols="${nb.cols}" data-align="${esc(nb.align)}" data-font="${esc(nb.font)}" data-size="${nb.size}" data-indent="${nb.indent}">
     ${bar}
@@ -190,73 +190,61 @@ function applyFontSize(pt) {
 }
 
 function bindBlockEditor(page, layout, ctx) {
-  const redraw = () => {
-    const next = harvestLayout(page);
-    layout.blocks = next.blocks;
-    page.innerHTML = layout.blocks.map((b) => renderBlock(b, ctx.fields())).join("")
-      || renderBlock({ type: "paragraph", html: "" }, ctx.fields());
-    bindBlocks();
+  const setCols = (node, cols) => {
+    const one = harvestLayout(page).blocks.find((b) => b.id === node.dataset.id);
+    if (!one) return;
+    cols = Math.min(4, Math.max(1, Number(cols)));
+    let html = (one.html || []).slice();
+    while (html.length < cols) html.push("");
+    if (html.length > cols) {
+      const rest = html.slice(cols).filter(Boolean).join(" ");
+      html = html.slice(0, cols);
+      if (rest) html[html.length - 1] = `${html[html.length - 1]} ${rest}`.trim();
+    }
+    const wrap = document.createElement("div");
+    wrap.innerHTML = renderBlock({ ...one, cols, html }, ctx.fields());
+    node.replaceWith(wrap.firstElementChild);
   };
 
-  const bindBlocks = () => {
-    page.querySelectorAll(".zed-edit").forEach((el) => {
-      el.addEventListener("focus", () => { window._zedLastEdit = el; });
-      el.addEventListener("keydown", (e) => {
-        if (e.key !== "Tab") return;
-        const block = el.closest(".zed-block");
-        if (!block || Number(block.dataset.cols || 1) !== 1) return;
-        e.preventDefault();
-        let n = Number(block.dataset.indent || 0);
-        n = e.shiftKey ? Math.max(0, n - 1) : Math.min(4, n + 1);
-        setIndent(block, n);
-      });
-    });
-    page.querySelectorAll("[data-cols]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const node = btn.closest(".zed-block");
-        const one = harvestLayout(node.parentNode).blocks.find((b) => b.id === node.dataset.id);
-        if (!one) return;
-        const cols = Number(btn.dataset.cols);
-        let html = (one.html || []).slice();
-        while (html.length < cols) html.push("");
-        if (html.length > cols) {
-          const rest = html.slice(cols).filter(Boolean).join(" ");
-          html = html.slice(0, cols);
-          if (rest) html[html.length - 1] = (html[html.length - 1] + " " + rest).trim();
-        }
-        const wrap = document.createElement("div");
-        wrap.innerHTML = renderBlock({ ...one, cols, html }, ctx.fields());
-        node.replaceWith(wrap.firstElementChild);
-        bindBlocks();
-      });
-    });
-    page.querySelectorAll("[data-up]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const node = btn.closest(".zed-block");
-        if (node.previousElementSibling) node.parentNode.insertBefore(node, node.previousElementSibling);
-      });
-    });
-    page.querySelectorAll("[data-down]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const node = btn.closest(".zed-block");
-        if (node.nextElementSibling) node.parentNode.insertBefore(node.nextElementSibling, node);
-      });
-    });
-    page.querySelectorAll("[data-rm]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const node = btn.closest(".zed-block");
-        node.remove();
-        if (!page.querySelector(".zed-block")) {
-          layout.blocks = [normalizeBlock({ cols: 1, html: [""] })];
-          page.innerHTML = renderBlock(layout.blocks[0], ctx.fields());
-          bindBlocks();
-        }
-      });
-    });
-  };
+  page.addEventListener("focusin", (e) => {
+    if (e.target.classList.contains("zed-edit")) window._zedLastEdit = e.target;
+  });
+  page.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || !e.target.classList.contains("zed-edit")) return;
+    const block = e.target.closest(".zed-block");
+    if (!block || Number(block.dataset.cols || 1) !== 1) return;
+    e.preventDefault();
+    let n = Number(block.dataset.indent || 0);
+    n = e.shiftKey ? Math.max(0, n - 1) : Math.min(4, n + 1);
+    setIndent(block, n);
+  });
+  page.addEventListener("click", (e) => {
+    const node = e.target.closest(".zed-block");
+    if (!node || !page.contains(node)) return;
+    if (e.target.closest("[data-cols]")) {
+      setCols(node, e.target.closest("[data-cols]").dataset.cols);
+      return;
+    }
+    if (e.target.closest("[data-up]")) {
+      if (node.previousElementSibling) node.parentNode.insertBefore(node, node.previousElementSibling);
+      return;
+    }
+    if (e.target.closest("[data-down]")) {
+      if (node.nextElementSibling) node.parentNode.insertBefore(node.nextElementSibling, node);
+      return;
+    }
+    if (e.target.closest("[data-rm]")) {
+      node.remove();
+      if (!page.querySelector(".zed-block")) {
+        layout.blocks = [normalizeBlock({ cols: 1, html: [""] })];
+        page.innerHTML = renderBlock(layout.blocks[0], ctx.fields());
+      }
+    }
+  });
 
-  document.getElementById("zed-tb").addEventListener("mousedown", (e) => {
-    if (e.target.closest("button, select")) e.preventDefault();
+  const tb = document.getElementById("zed-tb");
+  tb.addEventListener("mousedown", (e) => {
+    if (e.target.closest("button")) e.preventDefault();
   });
 
   document.querySelectorAll("#zed-tb [data-cmd]").forEach((btn) => {
@@ -308,14 +296,13 @@ function bindBlockEditor(page, layout, ctx) {
   document.getElementById("zed-add-p").addEventListener("click", () => {
     const html = renderBlock(normalizeBlock({ cols: 1, html: [""] }), ctx.fields());
     page.insertAdjacentHTML("beforeend", html);
-    bindBlocks();
     page.lastElementChild.querySelector(".zed-edit").focus();
   });
 
   document.getElementById("zed-field").addEventListener("click", () => {
     const edit = focusedEdit();
     if (!edit) {
-      toast("Поставьте курсор в абзац или шапку", true);
+      toast("Поставьте курсор в блок", true);
       return;
     }
     const sel = window.getSelection();
@@ -325,13 +312,11 @@ function bindBlockEditor(page, layout, ctx) {
     ctx.markField(edit, picked);
   });
 
-  bindBlocks();
   return {
     harvest: () => harvestLayout(page),
     setBlocks: (blocks) => {
       layout.blocks = blocks;
       page.innerHTML = blocks.map((b) => renderBlock(b, ctx.fields())).join("");
-      bindBlocks();
     },
     insertChip: (edit, field) => {
       edit.focus();
@@ -349,6 +334,5 @@ function bindBlockEditor(page, layout, ctx) {
         edit.appendChild(chip);
       }
     },
-    redraw,
   };
 }
