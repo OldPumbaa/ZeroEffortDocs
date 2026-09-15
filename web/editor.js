@@ -221,19 +221,19 @@ function bindBlockEditor(page, layout, ctx) {
   page.addEventListener("click", (e) => {
     const node = e.target.closest(".zed-block");
     if (!node || !page.contains(node)) return;
-    if (e.target.closest("[data-cols]")) {
-      setCols(node, e.target.closest("[data-cols]").dataset.cols);
+    if (e.target.closest(".zed-block-bar [data-cols]")) {
+      setCols(node, e.target.closest(".zed-block-bar [data-cols]").dataset.cols);
       return;
     }
-    if (e.target.closest("[data-up]")) {
+    if (e.target.closest(".zed-block-bar [data-up]")) {
       if (node.previousElementSibling) node.parentNode.insertBefore(node, node.previousElementSibling);
       return;
     }
-    if (e.target.closest("[data-down]")) {
+    if (e.target.closest(".zed-block-bar [data-down]")) {
       if (node.nextElementSibling) node.parentNode.insertBefore(node.nextElementSibling, node);
       return;
     }
-    if (e.target.closest("[data-rm]")) {
+    if (e.target.closest(".zed-block-bar [data-rm]")) {
       node.remove();
       if (!page.querySelector(".zed-block")) {
         layout.blocks = [normalizeBlock({ cols: 1, html: [""] })];
