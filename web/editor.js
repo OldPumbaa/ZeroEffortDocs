@@ -85,6 +85,7 @@ function harvestLayout(page) {
         align: node.dataset.align || "left",
         font,
         size,
+        indent: Number(node.dataset.indent || 0),
         html: dehydrateEl(edit),
       });
     }
@@ -96,7 +97,9 @@ function blockStyle(b) {
   const font = b.font || "Times New Roman";
   const size = b.size || 14;
   const align = b.align || "left";
-  return `font-family:'${font}',Times,serif;font-size:${size}pt;text-align:${align};`;
+  const indent = Number(b.indent || 0);
+  const ind = indent > 0 ? `text-indent:${indent * 1.25}cm;` : "";
+  return `font-family:'${font}',Times,serif;font-size:${size}pt;text-align:${align};${ind}`;
 }
 
 function renderBlock(b, fields) {
@@ -108,6 +111,7 @@ function renderBlock(b, fields) {
     <button type="button" class="ghost compact" data-up title="выше">↑</button>
     <button type="button" class="ghost compact" data-down title="ниже">↓</button>
     <span class="muted">${b.type === "header" ? "шапка" : "абзац"}</span>
+    <button type="button" class="ghost compact" data-kind>${b.type === "header" ? "в абзац" : "в шапку"}</button>
     <button type="button" class="ghost compact" data-rm>убрать</button>
   </div>`;
   if (b.type === "header") {
@@ -119,7 +123,7 @@ function renderBlock(b, fields) {
       </div>
     </div>`;
   }
-  return `<div class="zed-block" data-id="${esc(id)}" data-type="paragraph" data-align="${esc(align)}" data-font="${esc(font)}" data-size="${size}">
+  return `<div class="zed-block" data-id="${esc(id)}" data-type="paragraph" data-align="${esc(align)}" data-font="${esc(font)}" data-size="${size}" data-indent="${Number(b.indent || 0)}">
     ${bar}
     <div class="zed-edit" contenteditable="true" style="${blockStyle(b)}">${hydrateHtml(b.html || "", fields)}</div>
   </div>`;
@@ -135,6 +139,11 @@ function toolbarHtml() {
     <button type="button" class="ghost compact" data-align="left" title="к левому краю">⬅</button>
     <button type="button" class="ghost compact" data-align="center" title="по центру">↔</button>
     <button type="button" class="ghost compact" data-align="right" title="к правому краю">➡</button>
+    <select id="zed-indent" title="отступ первой строки">
+      <option value="0">без отступа</option>
+      <option value="1">отступ (Tab)</option>
+      <option value="2">двойной Tab</option>
+    </select>
     <span class="zed-tb-gap"></span>
     <button type="button" class="ghost compact" id="zed-add-p">+ абзац</button>
     <button type="button" class="ghost compact" id="zed-add-h">+ шапка</button>
@@ -146,6 +155,14 @@ function focusedEdit() {
   const ae = document.activeElement;
   if (ae && ae.classList.contains("zed-edit")) return ae;
   return window._zedLastEdit || null;
+}
+
+function setIndent(block, n) {
+  block.dataset.indent = String(n);
+  const edit = block.querySelector(".zed-edit");
+  if (edit) edit.style.textIndent = n > 0 ? `${n * 1.25}cm` : "0";
+  const sel = document.getElementById("zed-indent");
+  if (sel) sel.value = String(Math.min(2, n));
 }
 
 function applyFontSize(pt) {
@@ -179,6 +196,44 @@ function bindBlockEditor(page, layout, ctx) {
   const bindBlocks = () => {
     page.querySelectorAll(".zed-edit").forEach((el) => {
       el.addEventListener("focus", () => { window._zedLastEdit = el; });
+      el.addEventListener("keydown", (e) => {
+        if (e.key !== "Tab") return;
+        const block = el.closest(".zed-block");
+        if (!block || block.dataset.type !== "paragraph") return;
+        e.preventDefault();
+        let n = Number(block.dataset.indent || 0);
+        n = e.shiftKey ? Math.max(0, n - 1) : Math.min(4, n + 1);
+        setIndent(block, n);
+      });
+    });
+    page.querySelectorAll("[data-kind]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const node = btn.closest(".zed-block");
+        const one = harvestLayout(node.parentNode).blocks.find((b) => b.id === node.dataset.id);
+        if (!one) return;
+        const next = one.type === "header"
+          ? {
+              id: one.id,
+              type: "paragraph",
+              align: "left",
+              font: one.font,
+              size: one.size,
+              indent: 0,
+              html: [one.left, one.right].filter(Boolean).join(" "),
+            }
+          : {
+              id: one.id,
+              type: "header",
+              font: one.font,
+              size: one.size,
+              left: one.html || "",
+              right: "",
+            };
+        const wrap = document.createElement("div");
+        wrap.innerHTML = renderBlock(next, ctx.fields());
+        node.replaceWith(wrap.firstElementChild);
+        bindBlocks();
+      });
     });
     page.querySelectorAll("[data-up]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -245,6 +300,16 @@ function bindBlockEditor(page, layout, ctx) {
 
   document.getElementById("zed-size").addEventListener("change", (e) => {
     applyFontSize(Number(e.target.value));
+  });
+
+  document.getElementById("zed-indent").addEventListener("change", (e) => {
+    const edit = focusedEdit();
+    const block = edit?.closest(".zed-block");
+    if (!block || block.dataset.type !== "paragraph") {
+      toast("Отступ — для абзаца. Поставьте курсор в строку.", true);
+      return;
+    }
+    setIndent(block, Number(e.target.value));
   });
 
   document.getElementById("zed-add-p").addEventListener("click", () => {

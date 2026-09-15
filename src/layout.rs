@@ -18,6 +18,8 @@ struct Block {
     html: Option<String>,
     left: Option<String>,
     right: Option<String>,
+    #[serde(default)]
+    indent: Option<u32>,
 }
 
 pub fn is_layout_json(body: &str) -> bool {
@@ -87,8 +89,14 @@ fn render_blocks(blocks: &[Block]) -> String {
             Some("justify") => "justify",
             _ => "left",
         };
+        let indent = b.indent.unwrap_or(0);
+        let indent_css = if indent > 0 && b.kind != "header" {
+            format!("text-indent:{}cm;", indent as f32 * 1.25)
+        } else {
+            String::new()
+        };
         let style = format!(
-            "font-family:{};font-size:{size}pt;text-align:{align};",
+            "font-family:{};font-size:{size}pt;text-align:{align};{indent_css}",
             css_font(font)
         );
         match b.kind.as_str() {
@@ -129,7 +137,7 @@ mod tests {
           "v":1,
           "blocks":[
             {"type":"header","left":"ООО Ромашка","right":"Исх. {{num}}","size":12},
-            {"type":"paragraph","align":"center","html":"<b>ПРИКАЗ</b>","size":18}
+            {"type":"paragraph","align":"center","html":"<b>ПРИКАЗ</b>","size":18,"indent":1}
           ]
         }"#;
         let html = to_html(raw);
@@ -138,5 +146,6 @@ mod tests {
         assert!(html.contains("{{num}}"), "{html}");
         assert!(html.contains("text-align:center"), "{html}");
         assert!(html.contains("ПРИКАЗ"), "{html}");
+        assert!(html.contains("text-indent:1.25cm"), "{html}");
     }
 }

@@ -81,7 +81,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sidebar-foot { margin-top: auto; }
 .sidebar-foot .muted { margin: 8px 0 0; padding: 0 12px; color: rgba(243, 234, 219, 0.7); }
 
-main { padding: 32px 40px 64px; min-width: 0; }
+main { padding: 32px 40px 64px; min-width: 0; min-height: 0; }
 .top {
   display: flex;
   justify-content: space-between;
@@ -308,6 +308,52 @@ textarea { min-height: 110px; resize: vertical; }
   background: #fff;
   box-shadow: var(--shadow);
 }
+body.editor-mode main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 12px;
+}
+body.editor-mode #view {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.zed-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+.zed-workspace-main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+.zed-workspace-side {
+  overflow: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+.zed-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.zed-preview-sheet {
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 28px 36px 48px;
+  min-height: 480px;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 14pt;
+  line-height: 1.35;
+}
 .zed-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -317,6 +363,7 @@ textarea { min-height: 110px; resize: vertical; }
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 8px 10px;
+  flex-shrink: 0;
 }
 .zed-toolbar select { width: auto; min-width: 140px; }
 .zed-tb-gap { flex: 1; min-width: 8px; }
@@ -403,6 +450,6 @@ body.needs-setup main { visibility: hidden; }
   .sidebar nav { display: flex; flex: 1; }
   .sidebar-foot { display: none; }
   main { padding: 20px; }
-  .stats, .field-grid, .editor-grid, .sheet-grid { grid-template-columns: 1fr; }
+  .stats, .field-grid, .editor-grid, .sheet-grid, .zed-workspace { grid-template-columns: 1fr; }
   .nav-sub { display: none !important; }
 }

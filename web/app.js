@@ -168,11 +168,14 @@ async function render() {
     document.body.classList.remove("needs-setup");
     document.getElementById("wizard").hidden = true;
     await refreshSidebar(inst);
+    const editing = (location.hash || "").includes("/edit") || (location.hash || "").includes("/templates/new");
+    document.body.classList.toggle("editor-mode", editing);
     const { parts, query } = parseHash();
     const a = parts[0] || "home";
     if (a === "settings") await pageSettings(view, inst);
     else if (a === "templates" && parts[1] === "new") await pageTemplateEditor(view, null, query);
-    else if (a === "templates" && parts[1]) await pageTemplateEditor(view, parts[1], query);
+    else if (a === "templates" && parts[1] && parts[2] === "edit") await pageTemplateEditor(view, parts[1], query);
+    else if (a === "templates" && parts[1]) await pageTemplatePreview(view, parts[1]);
     else if (a === "templates") await pageTemplates(view);
     else if (a === "documents" && parts[1] === "new") await pageFillDocument(view, query.template);
     else if (a === "documents" && parts[1]) await pageDocumentView(view, parts[1]);
@@ -362,9 +365,38 @@ async function pageTemplates(view) {
     </a>`).join("")}</div>`;
 }
 
+async function pageTemplatePreview(view, id) {
+  const t = await api(`/api/templates/${id}`);
+  setNav(
+    "templates",
+    t.name || "Шаблон",
+    `<a class="btn ghost" href="#/documents/new?template=${t.id}">Выпустить</a><a class="btn" href="#/templates/${t.id}/edit">Редактировать</a>`,
+  );
+  const layout = parseLayout(t.body);
+  const inner = layout.blocks.map((b) => {
+    const indent = Number(b.indent || 0);
+    const style = `font-family:'${b.font || "Times New Roman"}',Times,serif;font-size:${b.size || 14}pt;text-align:${b.align || "left"};${indent ? `text-indent:${indent * 1.25}cm;` : ""}`;
+    if (b.type === "header") {
+      return `<table class="zed-header" style="${style}width:100%;border:none"><tr><td style="border:none;width:50%;vertical-align:top">${hydrateHtml(b.left || "", t.fields)}</td><td style="border:none;width:50%;vertical-align:top;text-align:right">${hydrateHtml(b.right || "", t.fields)}</td></tr></table>`;
+    }
+    return `<p style="${style}">${hydrateHtml(b.html || "", t.fields) || "&nbsp;"}</p>`;
+  }).join("");
+  view.innerHTML = `
+    <div class="sheet-grid">
+      <div class="zed-preview-sheet">${inner || "<p class='muted'>Пустой шаблон</p>"}</div>
+      <div class="card">
+        <p class="muted">Это предпросмотр. Редактор — отдельный экран: блоки, поля, шрифты.</p>
+        <p class="muted">${t.fields.length} полей · ${t.document_count} док.</p>
+        <div class="row" style="margin-top:12px">
+          <a class="btn" href="#/templates/${t.id}/edit">Редактировать</a>
+          <a class="btn ghost" href="#/documents/new?template=${t.id}">Выпустить документ</a>
+        </div>
+      </div>
+    </div>`;
+}
+
 async function pageTemplateEditor(view, id, query) {
   const isNew = !id;
-  setNav("templates", isNew ? "Новый документ" : "Шаблон", "");
   const data = isNew
     ? { name: "", body: "", fields: [], document_count: 0 }
     : await api(`/api/templates/${id}`);
@@ -384,29 +416,36 @@ async function pageTemplateEditor(view, id, query) {
   const layout = parseLayout(data.body);
   let ed = null;
 
+  const backHref = isNew ? "#/templates" : `#/templates/${id}`;
+  setNav(
+    "templates",
+    isNew ? "Новый шаблон" : "Редактор",
+    `<a class="btn ghost" href="${backHref}">К предпросмотру</a><button type="button" class="btn" id="save-tmpl-top">Сохранить</button>`,
+  );
   const draw = () => {
     view.innerHTML = `
-      <div class="sheet-grid">
-        <div class="grid">
+      <div class="zed-workspace">
+        <div class="zed-workspace-main">
           <label><span>Название шаблона</span>
             <input id="tmpl-name" type="text" required value="${esc(st.name)}" placeholder="Приём на работу">
           </label>
           <label class="drop" id="drop">
             <input type="file" id="file" accept=".docx,.txt,.md">
             <strong>Файл Word или текст</strong>
-            <p class="muted" id="file-label">${st.file ? esc(st.file.name) : data.source ? esc(data.source.name) : "Перетащите .docx. Текст станет блоками, {{поля}} подхватятся. Потом подвигайте и поправьте шрифты."}</p>
+            <p class="muted" id="file-label">${st.file ? esc(st.file.name) : data.source ? esc(data.source.name) : "Перетащите .docx. Текст станет блоками, {{поля}} подхватятся."}</p>
           </label>
           ${data.source ? `<p class="muted"><a href="/api/templates/${esc(data.id)}/source">скачать исходный файл</a></p>` : ""}
           ${toolbarHtml()}
-          <div class="zed-page" id="zed-page">${layout.blocks.map((b) => renderBlock(b, st.fields)).join("")}</div>
+          <div class="zed-scroll">
+            <div class="zed-page" id="zed-page">${layout.blocks.map((b) => renderBlock(b, st.fields)).join("")}</div>
+          </div>
         </div>
-        <div class="grid">
+        <div class="zed-workspace-side">
           <h2>Форма</h2>
           <p class="muted">Поля, которые заполняют вместо поиска по договору.</p>
           <div class="list" id="field-list"></div>
-          <div class="row">
-            <button type="button" class="btn" id="save-tmpl">Сохранить шаблон</button>
-            ${isNew ? "" : `<button type="button" class="ghost" id="issue">Документ по шаблону</button>`}
+          <div class="row" style="margin-top:12px">
+            <button type="button" class="btn" id="save-tmpl">Сохранить</button>
             ${isNew || data.document_count ? "" : `<button type="button" class="danger ghost" id="del-tmpl">удалить</button>`}
           </div>
         </div>
@@ -482,7 +521,7 @@ async function pageTemplateEditor(view, id, query) {
   };
 
   const bindRest = () => {
-    document.getElementById("save-tmpl").addEventListener("click", async () => {
+    const save = async () => {
       readFields();
       st.name = document.getElementById("tmpl-name").value;
       const body = JSON.stringify(ed.harvest());
@@ -519,11 +558,12 @@ async function pageTemplateEditor(view, id, query) {
         }
         toast("Шаблон сохранён");
         location.hash = `#/templates/${saved.id}`;
-        if (!isNew) render();
       } catch (e) {
         toast(e.message, true);
       }
-    });
+    };
+    document.getElementById("save-tmpl").addEventListener("click", save);
+    document.getElementById("save-tmpl-top")?.addEventListener("click", save);
     document.getElementById("issue")?.addEventListener("click", () => {
       location.hash = `#/documents/new?template=${id}`;
     });
