@@ -139,21 +139,8 @@ fn html_to_runs(html: &str, size: u32, font: &str) -> String {
                         st.italic = true;
                     } else if name == "u" {
                         st.underline = true;
-                    } else if name == "span" {
-                        if let Some(pt) = rest.find("font-size:") {
-                            let slice = &rest[pt + 10..];
-                            if let Ok(num) = slice
-                                .chars()
-                                .skip_while(|c| !c.is_ascii_digit())
-                                .take_while(|c| c.is_ascii_digit())
-                                .collect::<String>()
-                                .parse::<u32>()
-                            {
-                                if num > 0 && num < 80 {
-                                    st.size = num;
-                                }
-                            }
-                        }
+                    } else if name == "span" || name == "font" {
+                        apply_css_style(&mut st, &rest);
                     }
                     stack.push(st);
                 }
@@ -179,9 +166,41 @@ fn html_to_runs(html: &str, size: u32, font: &str) -> String {
     out
 }
 
+fn apply_css_style(st: &mut RunStyle, tag: &str) {
+    let lower = tag.to_ascii_lowercase();
+    if lower.contains("font-weight:bold")
+        || lower.contains("font-weight: bold")
+        || lower.contains("font-weight:700")
+        || lower.contains("font-weight: 700")
+        || lower.contains("font-weight:600")
+    {
+        st.bold = true;
+    }
+    if lower.contains("font-style:italic") || lower.contains("font-style: italic") {
+        st.italic = true;
+    }
+    if lower.contains("underline") {
+        st.underline = true;
+    }
+    if let Some(pt) = lower.find("font-size:") {
+        let slice = &lower[pt + 10..];
+        if let Ok(num) = slice
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u32>()
+        {
+            if (1..80).contains(&num) {
+                st.size = num;
+            }
+        }
+    }
+}
+
 fn run_xml(text: &str, st: &RunStyle) -> String {
-    let b = if st.bold { "<w:b/>" } else { "" };
-    let i = if st.italic { "<w:i/>" } else { "" };
+    let b = if st.bold { "<w:b/><w:bCs/>" } else { "" };
+    let i = if st.italic { "<w:i/><w:iCs/>" } else { "" };
     let u = if st.underline {
         r#"<w:u w:val="single"/>"#
     } else {
@@ -190,7 +209,7 @@ fn run_xml(text: &str, st: &RunStyle) -> String {
     let sz = st.size * 2;
     let font = xml_escape(&st.font);
     format!(
-        r#"<w:r><w:rPr>{b}{i}{u}<w:sz w:val="{sz}"/><w:szCs w:val="{sz}"/><w:rFonts w:ascii="{font}" w:hAnsi="{font}"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r>"#,
+        r#"<w:r><w:rPr>{b}{i}{u}<w:sz w:val="{sz}"/><w:szCs w:val="{sz}"/><w:rFonts w:ascii="{font}" w:hAnsi="{font}" w:cs="{font}"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r>"#,
         xml_escape(text)
     )
 }
@@ -302,5 +321,19 @@ mod tests {
         let bytes = layout_to_docx(raw, &[], &serde_json::Map::new()).unwrap();
         let extracted = crate::extract::from_bytes("t.docx", &bytes).unwrap();
         assert!(extracted.text.contains("ПРИКАЗ"), "{}", extracted.text);
+    }
+
+    #[test]
+    fn docx_keeps_bold_span() {
+        use std::io::Read;
+        let raw = r#"{"v":1,"blocks":[{"type":"block","html":"<span style=\"font-weight:bold\">ЖИРНЫЙ</span>"}]}"#;
+        let bytes = layout_to_docx(raw, &[], &serde_json::Map::new()).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut file = zip.by_name("word/document.xml").unwrap();
+        let mut xml = String::new();
+        file.read_to_string(&mut xml).unwrap();
+        assert!(xml.contains("<w:b"), "{xml}");
+        assert!(xml.contains("<w:bCs"), "{xml}");
+        assert!(xml.contains("ЖИРНЫЙ"), "{xml}");
     }
 }

@@ -171,21 +171,19 @@ fn render_blocks(blocks: &[Block]) -> String {
             } else {
                 cells[0].as_str()
             };
-            html.push_str(&format!("<p style=\"{style}\">{inner}</p>"));
+            html.push_str(&format!(
+                r#"<p align="{align}" style="{style}">{inner}</p>"#
+            ));
         } else {
             html.push_str(&format!(
                 r#"<table class="zed-header" style="{style}width:100%;border:none;"><tr>"#
             ));
             let width = 100 / n;
             for (i, cell) in cells.iter().enumerate() {
-                let ta = if n == 2 && i + 1 == n {
-                    "text-align:right;"
-                } else {
-                    ""
-                };
+                let cell_align = if n == 2 && i + 1 == n { "right" } else { align };
                 let inner = if cell.is_empty() { "&nbsp;" } else { cell };
                 html.push_str(&format!(
-                    r#"<td style="border:none;width:{width}%;vertical-align:top;{ta}">{inner}</td>"#
+                    r#"<td align="{cell_align}" style="border:none;width:{width}%;vertical-align:top;text-align:{cell_align};">{inner}</td>"#
                 ));
             }
             html.push_str("</tr></table>");

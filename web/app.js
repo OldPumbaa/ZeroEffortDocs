@@ -33,6 +33,7 @@ function fieldCardHtml(f, i) {
     ${type === "number" ? `
       <label class="check"><input data-k="auto" type="checkbox" ${auto ? "checked" : ""}> по порядку</label>
       ${auto ? `<label><span>Начинать с</span><input data-k="seq_start" type="number" min="1" value="${esc(f.seq_start || 1)}"></label>` : ""}` : ""}
+    <label><span>Подсказка в форме</span><input data-k="hint" type="text" value="${esc(f.hint || "")}" placeholder="Пример: Иванова Ивана Ивановича"></label>
     <button type="button" class="ghost compact" data-rm>убрать из формы</button>
   </div>`;
 }
@@ -445,6 +446,7 @@ async function pageTemplateEditor(view, id, query) {
       date_format: f.date_format || "d.m.Y",
       seq_start: f.seq_start || 1,
       next: f.next,
+      hint: f.hint || "",
     })),
     file: null,
   };
@@ -536,6 +538,7 @@ async function pageTemplateEditor(view, id, query) {
       f.date_format = card.querySelector('[data-k="date_format"]')?.value || "d.m.Y";
       const start = card.querySelector('[data-k="seq_start"]');
       f.seq_start = start ? Number(start.value || 1) : 1;
+      f.hint = card.querySelector('[data-k="hint"]')?.value || "";
       if (f.type === "date") f.fill_mode = f.auto ? "created_at" : "manual";
       else if (f.type === "number") f.fill_mode = f.auto ? "sequence" : "manual";
       else f.fill_mode = "manual";
@@ -562,6 +565,7 @@ async function pageTemplateEditor(view, id, query) {
             auto: !!f.auto,
             date_format: f.date_format || "d.m.Y",
             seq_start: Number(f.seq_start || 1),
+            hint: f.hint || "",
             options: f.options || [],
           })),
         };
@@ -600,6 +604,7 @@ async function pageTemplateEditor(view, id, query) {
         auto: false,
         date_format: "d.m.Y",
         seq_start: 1,
+        hint: "",
         options: [],
       });
       paintFields();
@@ -655,6 +660,7 @@ async function pageTemplateEditor(view, id, query) {
               auto: f.fill_mode === "created_at" || f.fill_mode === "sequence",
               date_format: "d.m.Y",
               seq_start: 1,
+              hint: "",
               options: [],
             });
           }
@@ -770,21 +776,26 @@ function formatDateIso(iso, fmt) {
   return `${dd}.${mm}.${yyyy}`;
 }
 
+function fieldHint(f) {
+  const h = (f.hint || "").trim();
+  return h ? `<small class="field-hint">${esc(h)}</small>` : "";
+}
+
 function fillFieldRow(f, today) {
   const req = f.required && !f.auto ? " *" : "";
   if (f.type === "date") {
     const val = f.auto ? today : "";
-    const hint = f.auto ? `сейчас: ${formatDateIso(today, f.date_format || "d.m.Y")}` : "";
-    return `<label><span>${esc(f.label)}${req} ${hint ? `<small class="muted">${esc(hint)}</small>` : ""}</span>
-      <input name="${esc(f.key)}" type="date" value="${esc(val)}"></label>`;
+    const autoHint = f.auto ? `сейчас: ${formatDateIso(today, f.date_format || "d.m.Y")}` : "";
+    return `<label><span>${esc(f.label)}${req} ${autoHint ? `<small class="muted">${esc(autoHint)}</small>` : ""}</span>
+      <input name="${esc(f.key)}" type="date" value="${esc(val)}">${fieldHint(f)}</label>`;
   }
   if (f.type === "number") {
     const val = f.auto ? (f.next ?? f.seq_start ?? 1) : "";
-    const hint = f.auto ? "можно поменять" : "";
-    return `<label><span>${esc(f.label)}${req} ${hint ? `<small class="muted">${esc(hint)}</small>` : ""}</span>
-      <input name="${esc(f.key)}" type="number" value="${esc(val)}"></label>`;
+    const autoHint = f.auto ? "можно поменять" : "";
+    return `<label><span>${esc(f.label)}${req} ${autoHint ? `<small class="muted">${esc(autoHint)}</small>` : ""}</span>
+      <input name="${esc(f.key)}" type="number" value="${esc(val)}">${fieldHint(f)}</label>`;
   }
-  return `<label><span>${esc(f.label)}${req}</span><input name="${esc(f.key)}" type="text"></label>`;
+  return `<label><span>${esc(f.label)}${req}</span><input name="${esc(f.key)}" type="text">${fieldHint(f)}</label>`;
 }
 
 function fieldControl(field) {
@@ -820,12 +831,12 @@ async function pageDocumentView(view, id) {
             const v = doc.values[f.key];
             if (f.type === "date") {
               const iso = (v && String(v).slice(0, 10)) || "";
-              return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="date" value="${esc(iso)}"></label>`;
+              return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="date" value="${esc(iso)}">${fieldHint(f)}</label>`;
             }
             if (f.type === "number") {
-              return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="number" value="${esc(v ?? "")}"></label>`;
+              return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="number" value="${esc(v ?? "")}">${fieldHint(f)}</label>`;
             }
-            return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="text" value="${esc(v ?? "")}"></label>`;
+            return `<label><span>${esc(f.label)}</span><input name="${esc(f.key)}" type="text" value="${esc(v ?? "")}">${fieldHint(f)}</label>`;
           }).join("")}
           <button type="submit">Сохранить правки</button>
         </form>

@@ -142,6 +142,7 @@ button.compact { padding: 6px 10px; font-size: 13px; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 label { display: grid; gap: 6px; font-size: 14px; }
+.field-hint { color: var(--muted); font-size: 13px; }
 label span { color: var(--muted); }
 input[type="text"], input[type="number"], input[type="date"], select, textarea {
   background: #fff;
@@ -426,12 +427,14 @@ body.editor-mode #view {
 .zed-block-bar button.on { background: var(--forest-soft); color: var(--forest); }
 .paper-wrap:focus { outline: 2px solid var(--forest-soft); }
 .chip {
-  display: inline-block;
+  display: inline;
   background: var(--forest-soft);
   color: var(--forest);
   border-radius: 6px;
-  padding: 0 6px;
+  padding: 0 5px;
   font: inherit;
+  text-indent: 0;
+  margin: 0;
   cursor: pointer;
   user-select: all;
 }

@@ -103,9 +103,9 @@ pub async fn fields_of(pool: &SqlitePool, template_id: &str) -> Result<Vec<Field
         let key: String = row.try_get("key")?;
         let fill_mode = FillMode::parse(&row.try_get::<String, _>("fill_mode")?)?;
         let config_raw: String = row.try_get("config_json").unwrap_or_default();
-        let (date_format, auto, seq_start) = parse_config(Some(&config_raw), fill_mode);
+        let cfg = parse_config(Some(&config_raw), fill_mode);
         let next = if fill_mode == FillMode::Sequence {
-            Some(peek_seq(pool, template_id, &key, seq_start).await?)
+            Some(peek_seq(pool, template_id, &key, cfg.seq_start).await?)
         } else {
             None
         };
@@ -117,10 +117,11 @@ pub async fn fields_of(pool: &SqlitePool, template_id: &str) -> Result<Vec<Field
             required: required != 0,
             fill_mode,
             options,
-            auto,
-            date_format,
-            seq_start,
+            auto: cfg.auto,
+            date_format: cfg.date_format,
+            seq_start: cfg.seq_start,
             next,
+            hint: cfg.hint,
         });
     }
     Ok(fields)
@@ -333,10 +334,19 @@ fn prepare_fields(
             .trim()
             .to_string();
         let seq_start = input.seq_start.unwrap_or(1).max(1);
+        let hint = input
+            .hint
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(300)
+            .collect::<String>();
         let config_json = serde_json::json!({
             "date_format": date_format,
             "auto": auto,
             "seq_start": seq_start,
+            "hint": hint,
         })
         .to_string();
         if field_type == FieldType::Select {
@@ -412,26 +422,39 @@ async fn insert_fields(
     Ok(())
 }
 
-fn parse_config(raw: Option<&str>, fill_mode: FillMode) -> (String, bool, i64) {
-    let mut date_format = "d.m.Y".to_string();
-    let mut auto = matches!(fill_mode, FillMode::CreatedAt | FillMode::Sequence);
-    let mut seq_start = 1i64;
+struct FieldCfg {
+    date_format: String,
+    auto: bool,
+    seq_start: i64,
+    hint: String,
+}
+
+fn parse_config(raw: Option<&str>, fill_mode: FillMode) -> FieldCfg {
+    let mut cfg = FieldCfg {
+        date_format: "d.m.Y".into(),
+        auto: matches!(fill_mode, FillMode::CreatedAt | FillMode::Sequence),
+        seq_start: 1,
+        hint: String::new(),
+    };
     if let Some(raw) = raw {
         if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str(raw) {
             if let Some(s) = obj.get("date_format").and_then(|x| x.as_str()) {
                 if !s.is_empty() {
-                    date_format = s.to_string();
+                    cfg.date_format = s.to_string();
                 }
             }
             if let Some(b) = obj.get("auto").and_then(|x| x.as_bool()) {
-                auto = b;
+                cfg.auto = b;
             }
             if let Some(n) = obj.get("seq_start").and_then(|x| x.as_i64()) {
-                seq_start = n.max(1);
+                cfg.seq_start = n.max(1);
+            }
+            if let Some(s) = obj.get("hint").and_then(|x| x.as_str()) {
+                cfg.hint = s.trim().to_string();
             }
         }
     }
-    (date_format, auto, seq_start)
+    cfg
 }
 
 async fn peek_seq(

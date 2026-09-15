@@ -73,7 +73,14 @@ function hydrateHtml(html, fields) {
 function dehydrateEl(el) {
   const clone = el.cloneNode(true);
   clone.querySelectorAll(".chip").forEach((chip) => {
-    chip.replaceWith(document.createTextNode(`{{${chip.dataset.key}}}`));
+    let html = `{{${chip.dataset.key}}}`;
+    const w = (chip.style.fontWeight || "").toLowerCase();
+    if ((chip.style.textDecoration || "").includes("underline")) html = `<u>${html}</u>`;
+    if ((chip.style.fontStyle || "") === "italic") html = `<i>${html}</i>`;
+    if (w === "bold" || w === "700" || w === "600") html = `<b>${html}</b>`;
+    const tmp = document.createElement("span");
+    tmp.innerHTML = html;
+    chip.replaceWith(...[...tmp.childNodes]);
   });
   return clone.innerHTML.replace(/\u200B/g, "");
 }

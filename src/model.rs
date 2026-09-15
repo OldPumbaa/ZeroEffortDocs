@@ -88,6 +88,8 @@ pub struct Field {
     pub seq_start: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<i64>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -109,6 +111,8 @@ pub struct FieldInput {
     pub date_format: Option<String>,
     #[serde(default)]
     pub seq_start: Option<i64>,
+    #[serde(default)]
+    pub hint: Option<String>,
 }
 
 impl Default for FieldInput {
@@ -124,6 +128,7 @@ impl Default for FieldInput {
             auto: None,
             date_format: None,
             seq_start: None,
+            hint: None,
         }
     }
 }

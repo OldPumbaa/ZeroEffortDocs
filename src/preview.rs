@@ -53,6 +53,9 @@ fn wrap_sheet(title: &str, inner: &str, pages: u32, for_pdf: bool) -> String {
   table {{ border-collapse: collapse; width: 100%; margin: 0.2em 0; }}
   td, th {{ border: none; padding: 0 6px 0 0; vertical-align: top; }}
   .zed-header td {{ vertical-align: top; }}
+  p[align="right"], td[align="right"], div[align="right"] {{ text-align: right !important; }}
+  p[align="center"], td[align="center"], div[align="center"] {{ text-align: center !important; }}
+  p[align="left"], td[align="left"] {{ text-align: left !important; }}
 </style>
 </head>
 <body><div class="page">{inner}</div></body>
